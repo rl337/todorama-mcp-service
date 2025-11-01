@@ -87,7 +87,7 @@ class MCPTodoAPI:
             Dictionary with completion status and optional followup task ID
         """
         # Verify task exists and is locked by this agent
-        task = db.get_task(task_id)
+        task = get_db().get_task(task_id)
         if not task:
             return {"success": False, "error": f"Task {task_id} not found"}
         
@@ -95,22 +95,27 @@ class MCPTodoAPI:
             return {"success": False, "error": f"Task {task_id} is assigned to different agent"}
         
         # Complete the task
-        db.complete_task(task_id, agent_id, notes=notes)
+        get_db().complete_task(task_id, agent_id, notes=notes)
         
         result = {"success": True, "task_id": task_id, "completed": True}
         
         # Create followup if provided
         if followup_title and followup_task_type and followup_instruction and followup_verification:
-            followup_id = db.create_task(
+            # Use the same project_id as the completed task
+            completed_task = get_db().get_task(task_id)
+            followup_project_id = completed_task.get("project_id") if completed_task else None
+            
+            followup_id = get_db().create_task(
                 title=followup_title,
                 task_type=followup_task_type,
                 task_instruction=followup_instruction,
                 verification_instruction=followup_verification,
                 agent_id=agent_id,
+                project_id=followup_project_id,
                 notes=None
             )
             
-            db.create_relationship(
+            get_db().create_relationship(
                 parent_task_id=task_id,
                 child_task_id=followup_id,
                 relationship_type="followup",
@@ -165,11 +170,11 @@ class MCPTodoAPI:
         # Create relationship if provided
         if parent_task_id and relationship_type:
             # Verify parent exists
-            parent = db.get_task(parent_task_id)
+            parent = get_db().get_task(parent_task_id)
             if not parent:
                 return {"success": False, "error": f"Parent task {parent_task_id} not found"}
             
-            rel_id = db.create_relationship(
+            rel_id = get_db().create_relationship(
                 parent_task_id=parent_task_id,
                 child_task_id=task_id,
                 relationship_type=relationship_type,
