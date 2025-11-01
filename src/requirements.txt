@@ -1,0 +1,11 @@
+# TODO Service Dependencies
+# Note: Most dependencies are already in june-base image
+
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Test dependencies (for development)
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+httpx>=0.25.0
+

@@ -1,0 +1,23 @@
+services:
+  todo-mcp-service:
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+    container_name: todo-mcp-service
+    restart: unless-stopped
+    ports:
+      - "${TODO_SERVICE_PORT:-8004}:8004"
+    environment:
+      - TODO_DB_PATH=/app/data/todos.db
+      - TODO_BACKUPS_DIR=/app/backups
+      - TODO_SERVICE_PORT=8004
+      - TODO_BACKUP_INTERVAL_HOURS=24
+    volumes:
+      - ${TODO_DATA_DIR:-./data}:/app/data
+      - ${TODO_BACKUPS_DIR:-./backups}:/app/backups
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
