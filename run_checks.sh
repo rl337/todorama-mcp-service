@@ -60,7 +60,12 @@ check_dependencies() {
     # Check for pytest
     if ! python3 -c "import pytest" 2>/dev/null; then
         print_warning "pytest not installed. Installing..."
-        pip install pytest pytest-asyncio httpx fastapi || pip3 install pytest pytest-asyncio httpx fastapi
+        # Use UV if available, otherwise pip
+        if command -v uv &> /dev/null; then
+            uv pip install pytest pytest-asyncio httpx fastapi
+        else
+            pip install pytest pytest-asyncio httpx fastapi || pip3 install pytest pytest-asyncio httpx fastapi
+        fi
     fi
     print_success "pytest available"
     

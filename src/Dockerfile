@@ -4,14 +4,21 @@ FROM python:3.11-alpine
 RUN apk add --no-cache \
     sqlite \
     gzip \
+    curl \
     && rm -rf /var/cache/apk/*
+
+# Install UV
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 # Set working directory
 WORKDIR /app
 
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy project files for dependency resolution
+COPY pyproject.toml ./
+COPY uv.lock* ./
+
+# Install Python dependencies with UV
+RUN uv sync --frozen --no-dev
 
 # Copy application code
 COPY src/ .

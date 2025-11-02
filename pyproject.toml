@@ -1,3 +1,44 @@
+[project]
+name = "todo-mcp-service"
+version = "0.1.0"
+description = "TODO MCP Service - Task management for AI agents with project support"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "bcrypt>=4.0.0",
+    "boto3>=1.28.0",
+    "click>=8.1.0",
+    "fastapi>=0.104.0",
+    "httpx>=0.25.0",
+    "moto>=4.2.0",
+    "nats-py>=2.7.0",
+    "numpy>=1.24.0",
+    "opentelemetry-api>=1.38.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.38.0",
+    "opentelemetry-instrumentation-fastapi>=0.42b0",
+    "opentelemetry-instrumentation-httpx>=0.42b0",
+    "opentelemetry-instrumentation-sqlite3>=0.42b0",
+    "opentelemetry-sdk>=1.38.0",
+    "prometheus-client>=0.19.0",
+    "psycopg2-binary>=2.9.0",
+    "python-telegram-bot>=21.0.0",
+    "redis>=5.0.0",
+    "reportlab>=4.0.0",
+    "slack-sdk>=3.27.0",
+    "speechrecognition>=3.10.0",
+    "strawberry-graphql>=0.215.0",
+    "uvicorn[standard]>=0.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.0.0",
+]
+
+# No build system needed for application - dependencies only
+
 [tool.black]
 line-length = 100
 target-version = ['py311']

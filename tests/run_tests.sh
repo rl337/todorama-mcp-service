@@ -14,7 +14,12 @@ echo "🧪 Running TODO service tests..."
 # Install test dependencies if needed
 if ! python3 -c "import pytest" 2>/dev/null; then
     echo "Installing pytest and dependencies..."
-    pip install pytest pytest-asyncio httpx fastapi || pip3 install pytest pytest-asyncio httpx fastapi
+    # Use UV if available, otherwise pip
+    if command -v uv &> /dev/null; then
+        uv pip install pytest pytest-asyncio httpx fastapi
+    else
+        pip install pytest pytest-asyncio httpx fastapi || pip3 install pytest pytest-asyncio httpx fastapi
+    fi
 fi
 
 # Run tests
