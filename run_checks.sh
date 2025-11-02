@@ -101,7 +101,7 @@ run_tests() {
         fi
         
         print_info "Running $(basename $test_file)..."
-        if python3 -m pytest "$test_file" -v --tb=short; then
+        if poetry run pytest "$test_file" -v --tb=short; then
             print_success "$(basename $test_file) passed"
         else
             print_error "$(basename $test_file) failed"
@@ -240,7 +240,7 @@ EOF
 test_backup_functionality() {
     print_header "Testing Backup Functionality"
     
-    if python3 -m pytest tests/test_backup.py -v --tb=short -k "test_" 2>/dev/null | grep -q "PASSED\|passed"; then
+    if poetry run pytest tests/test_backup.py -v --tb=short -k "test_" 2>/dev/null | grep -q "PASSED\|passed"; then
         print_success "Backup functionality tests passed"
         return 0
     else
