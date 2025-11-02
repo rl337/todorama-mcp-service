@@ -610,6 +610,219 @@ Tasks that remain in_progress longer than the timeout are automatically unlocked
 - The stale warning system automatically detects and warns about previously abandoned tasks
 - Use `query_stale_tasks()` in monitoring dashboards or health checks
 
+## Proactive Task Management (ENCOURAGED)
+
+**Agents are ENCOURAGED to be proactive in task management and identify opportunities for improvement.**
+
+### Breaking Down Large Tasks
+
+When working on a task, if you discover it's too large or complex:
+
+1. **Break it down into subtasks:**
+   - Use `create_task()` to create smaller, focused subtasks
+   - Link them as `subtask` relationships to the parent task
+   - Each subtask should be independently completable
+   - Add clear `task_instruction` and `verification_instruction` for each subtask
+
+2. **Example workflow:**
+   ```python
+   # While working on task 123, you realize it needs to be split:
+   parent_task_id = 123
+   
+   # Create subtasks
+   subtask1 = create_task(
+       title="Implement authentication endpoint",
+       task_type="concrete",
+       task_instruction="Create POST /auth/login endpoint with JWT token generation",
+       verification_instruction="Test endpoint with valid/invalid credentials, verify JWT token format",
+       agent_id="my-agent",
+       project_id=1,
+       parent_task_id=parent_task_id,
+       relationship_type="subtask"
+   )
+   
+   subtask2 = create_task(
+       title="Add authentication middleware",
+       task_type="concrete",
+       task_instruction="Create middleware to validate JWT tokens on protected routes",
+       verification_instruction="Test middleware rejects invalid tokens, accepts valid tokens",
+       agent_id="my-agent",
+       project_id=1,
+       parent_task_id=parent_task_id,
+       relationship_type="subtask"
+   )
+   ```
+
+### Creating Tasks for Good Ideas
+
+**If you notice something that would improve the codebase but is out of scope for your current task:**
+
+1. **Create a task immediately** - Don't wait, don't forget
+   - Use `create_task()` to capture the idea
+   - Set appropriate `priority` (usually "medium" unless critical)
+   - Add `notes` explaining why this would be beneficial
+   - Link to current task with `relationship_type="related"` if relevant
+
+2. **Common scenarios:**
+   - **Performance improvements**: "Optimize database query in X function"
+   - **Code quality**: "Refactor Y module to reduce complexity"
+   - **User experience**: "Add better error messages for X endpoint"
+   - **Documentation**: "Add API examples for Y feature"
+   - **Testing**: "Add integration tests for Z functionality"
+   - **Security**: "Review authentication in X module"
+
+3. **Example:**
+   ```python
+   # While working on task 123, you notice a refactoring opportunity:
+   create_task(
+       title="Refactor database.py to use connection pooling",
+       task_type="concrete",
+       task_instruction="Replace direct SQLite connections with connection pool to improve performance under load. Current code creates new connection per query which is inefficient.",
+       verification_instruction="Verify connection pooling reduces connection overhead, run performance tests comparing before/after",
+       agent_id="my-agent",
+       project_id=1,
+       parent_task_id=123,  # Related to current work
+       relationship_type="related",
+       priority="medium",
+       notes="Noticed while working on task 123. Current implementation creates many short-lived connections."
+   )
+   ```
+
+### Creating Tasks for Refactoring
+
+**When you identify code that needs refactoring but it's not part of your current task:**
+
+1. **Create refactoring tasks with clear scope:**
+   - Specify exactly what needs refactoring
+   - Explain why (code smell, technical debt, performance, maintainability)
+   - Estimate complexity with `estimated_hours`
+   - Set priority based on impact
+
+2. **Examples of refactoring to capture:**
+   - Duplicated code that should be extracted
+   - Complex functions that need simplification
+   - Outdated patterns that should be modernized
+   - Poor separation of concerns
+   - Missing abstraction layers
+
+3. **Example:**
+   ```python
+   # You notice duplicated validation logic:
+   create_task(
+       title="Extract common validation logic into shared module",
+       task_type="concrete",
+       task_instruction="Three endpoints (A, B, C) have identical validation logic. Extract to shared validation module to reduce duplication and ensure consistency.",
+       verification_instruction="Verify all three endpoints use new validation module, no duplicated code remains, tests still pass",
+       agent_id="my-agent",
+       project_id=1,
+       priority="medium",
+       estimated_hours=2.0,
+       notes="Found duplication while reviewing endpoint implementations. Affects: /api/users, /api/projects, /api/tasks"
+   )
+   ```
+
+### Creating Tasks for Missing Tests
+
+**When you notice test coverage gaps or tests that should exist but don't:**
+
+1. **Create test tasks for out-of-scope areas:**
+   - If current task doesn't include tests (e.g., refactoring existing code)
+   - If you notice edge cases not covered by existing tests
+   - If integration tests are missing for a feature
+   - If test infrastructure improvements are needed
+
+2. **Specify test requirements clearly:**
+   - What should be tested (specific functions, endpoints, scenarios)
+   - Why it matters (edge cases, critical paths, regression prevention)
+   - Test type (unit, integration, performance, etc.)
+
+3. **Example:**
+   ```python
+   # You're refactoring code but notice missing tests:
+   create_task(
+       title="Add integration tests for MCP bulk operations",
+       task_type="concrete",
+       task_instruction="Add comprehensive integration tests for bulk_unlock_tasks, bulk_create_tasks, and other bulk MCP operations. Test partial failures, transaction rollback, and error handling.",
+       verification_instruction="Verify all bulk operations have integration tests, edge cases covered, tests pass, coverage increased",
+       agent_id="my-agent",
+       project_id=2,
+       priority="high",
+       estimated_hours=4.0,
+       notes="Noticed while working on task 127. Bulk operations are critical for agent workflows but lack integration tests."
+   )
+   ```
+
+### Best Practices for Proactive Task Creation
+
+1. **Don't let good ideas slip away** - Create the task immediately when you notice something
+2. **Be specific** - Clear `task_instruction` and `verification_instruction` help future agents
+3. **Link related work** - Use `relationship_type` to connect related tasks
+4. **Set appropriate priority** - Balance impact vs urgency
+5. **Add context in notes** - Explain where/when you noticed the issue
+6. **Break down large refactoring** - Large refactors should be broken into smaller tasks
+7. **Don't create duplicates** - Check if similar task exists using `search_tasks()` first
+
+### Workflow Integration
+
+**Recommended workflow when working on a task:**
+```python
+# 1. Reserve your main task
+task = reserve_task(task_id=123, agent_id="my-agent")
+task_id = 123
+
+try:
+    # 2. While working, keep a list of ideas:
+    ideas = []
+    
+    # 3. Work on the main task
+    implement_feature()
+    
+    # 4. When you notice something out of scope:
+    if notice_refactoring_opportunity():
+        ideas.append(("refactor", "description"))
+    
+    if notice_missing_tests():
+        ideas.append(("test", "description"))
+    
+    if notice_improvement():
+        ideas.append(("improvement", "description"))
+    
+    # 5. Complete main task first
+    complete_task(task_id=task_id, agent_id="my-agent", notes="Main feature implemented")
+    
+    # 6. Create tasks for all ideas (don't forget!)
+    for idea_type, description in ideas:
+        create_task(
+            title=description["title"],
+            task_type="concrete",
+            task_instruction=description["instruction"],
+            verification_instruction=description["verification"],
+            agent_id="my-agent",
+            project_id=task["project_id"],
+            priority="medium",
+            notes=f"Noticed while working on task {task_id}"
+        )
+        
+except Exception as e:
+    unlock_task(task_id=task_id, agent_id="my-agent")
+    raise
+```
+
+### Task Queue Health
+
+**Maintain a healthy task queue by:**
+- Creating more tasks than you complete (positive growth)
+- Breaking down large tasks into manageable pieces
+- Capturing technical debt and refactoring opportunities
+- Identifying missing test coverage
+- Documenting improvement ideas as you encounter them
+
+**A well-maintained task queue:**
+- Always has available tasks for agents to pick up
+- Prevents work from blocking on large, complex tasks
+- Ensures good ideas and improvements are captured
+- Makes the codebase progressively better over time
+
 ## Common Tasks
 
 ### Adding a New Endpoint
