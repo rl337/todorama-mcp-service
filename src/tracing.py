@@ -17,7 +17,12 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+try:
+    from opentelemetry.exporter.jaeger.thrift import JaegerExporter
+    JAEGER_AVAILABLE = True
+except ImportError:
+    JaegerExporter = None
+    JAEGER_AVAILABLE = False
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.instrumentation.sqlite3 import SQLite3Instrumentor
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
@@ -80,18 +85,21 @@ def setup_tracing() -> None:
         except Exception as e:
             logger.warning("Failed to configure OTLP exporter", exc_info=True)
     
-    # Jaeger exporter (direct)
+    # Jaeger exporter (direct) - optional if package not installed
     if _use_jaeger:
-        try:
-            jaeger_exporter = JaegerExporter(
-                agent_host_name=os.getenv("JAEGER_AGENT_HOST", "localhost"),
-                agent_port=int(os.getenv("JAEGER_AGENT_PORT", "6831")),
-                collector_endpoint=_jaeger_endpoint,
-            )
-            span_processors.append(BatchSpanProcessor(jaeger_exporter))
-            logger.info("Jaeger exporter configured", extra={"endpoint": _jaeger_endpoint})
-        except Exception as e:
-            logger.warning("Failed to configure Jaeger exporter", exc_info=True)
+        if not JAEGER_AVAILABLE:
+            logger.warning("Jaeger exporter requested but opentelemetry-exporter-jaeger not installed")
+        else:
+            try:
+                jaeger_exporter = JaegerExporter(
+                    agent_host_name=os.getenv("JAEGER_AGENT_HOST", "localhost"),
+                    agent_port=int(os.getenv("JAEGER_AGENT_PORT", "6831")),
+                    collector_endpoint=_jaeger_endpoint,
+                )
+                span_processors.append(BatchSpanProcessor(jaeger_exporter))
+                logger.info("Jaeger exporter configured", extra={"endpoint": _jaeger_endpoint})
+            except Exception as e:
+                logger.warning("Failed to configure Jaeger exporter", exc_info=True)
     
     # Console exporter (for debugging)
     if _enable_console:

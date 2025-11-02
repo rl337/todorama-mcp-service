@@ -1317,6 +1317,170 @@ class MCPTodoAPI:
         }
     
     @staticmethod
+    def get_task_statistics(
+        project_id: Optional[int] = None,
+        task_type: Optional[Literal["concrete", "abstract", "epic"]] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get aggregated statistics about tasks without requiring Python post-processing.
+        
+        Returns:
+        - Total task count
+        - Counts by status (available, in_progress, complete, blocked, cancelled)
+        - Counts by project_id (if project_id parameter provided, otherwise all projects)
+        - Counts by task_type (concrete, abstract, epic)
+        - Completion rate (percentage)
+        
+        Args:
+            project_id: Optional project filter
+            task_type: Optional task type filter
+            start_date: Optional start date filter (ISO format timestamp)
+            end_date: Optional end date filter (ISO format timestamp)
+            
+        Returns:
+            Dictionary with statistics including counts by status, type, project, and completion rate
+            
+        ERROR HANDLING:
+        - No errors typically returned - function always returns success with statistics (zeros if no tasks match filters)
+        - Parameter validation errors (invalid date format, invalid task_type enum) are handled by framework validation before function is called
+        - Database errors are rare; if connection issues occur, retry with exponential backoff
+        """
+        stats = get_db().get_task_statistics(
+            project_id=project_id,
+            task_type=task_type,
+            start_date=start_date,
+            end_date=end_date
+        )
+        return {
+            "success": True,
+            **stats
+        }
+    
+    @staticmethod
+    def get_recent_completions(
+        limit: int = 10,
+        project_id: Optional[int] = None,
+        hours: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Get recently completed tasks sorted by completion time.
+        
+        Parameters:
+        - limit: number of tasks to return (default: 10)
+        - project_id: optional filter by project
+        - hours: optional filter for completions within last N hours
+        
+        Returns lightweight summaries (task_id, title, completed_at, agent_id, project_id).
+        
+        Args:
+            limit: Maximum number of tasks to return (default: 10)
+            project_id: Optional project filter
+            hours: Optional filter for completions within last N hours
+            
+        Returns:
+            Dictionary with success status and list of completed tasks (lightweight format)
+            
+        ERROR HANDLING:
+        - No errors typically returned - function always returns success with tasks list (empty if none found)
+        - Parameter validation errors (invalid limit, negative hours) are handled by framework validation before function is called
+        - Database errors are rare; if connection issues occur, retry with exponential backoff
+        """
+        completions = get_db().get_recent_completions(
+            limit=limit,
+            project_id=project_id,
+            hours=hours
+        )
+        return {
+            "success": True,
+            "tasks": completions,
+            "count": len(completions)
+        }
+    
+    @staticmethod
+    def get_task_summary(
+        project_id: Optional[int] = None,
+        task_type: Optional[Literal["concrete", "abstract", "epic"]] = None,
+        task_status: Optional[Literal["available", "in_progress", "complete", "blocked", "cancelled"]] = None,
+        assigned_agent: Optional[str] = None,
+        priority: Optional[Literal["low", "medium", "high", "critical"]] = None,
+        limit: int = 100
+    ) -> Dict[str, Any]:
+        """
+        Get lightweight task summaries (key fields only) instead of full task objects.
+        
+        Returns only essential fields: task_id, title, status, assigned_agent, project_id, 
+        updated_at, created_at, completed_at. Not the full task with all fields.
+        
+        Parameters: Same as query_tasks() but returns only essential fields.
+        Benefits: Faster queries, less data transfer, easier to parse, better for bulk operations.
+        
+        Args:
+            project_id: Optional project filter
+            task_type: Optional task type filter
+            task_status: Optional status filter
+            assigned_agent: Optional agent filter
+            priority: Optional priority filter
+            limit: Maximum number of results (default: 100)
+            
+        Returns:
+            Dictionary with success status and list of task summaries (essential fields only)
+            
+        ERROR HANDLING:
+        - No errors typically returned - function always returns success with tasks list (empty if none match filters)
+        - Parameter validation errors (invalid enum values, invalid limit) are handled by framework validation before function is called
+        - Database errors are rare; if connection issues occur, retry with exponential backoff
+        """
+        summaries = get_db().get_task_summaries(
+            project_id=project_id,
+            task_type=task_type,
+            task_status=task_status,
+            assigned_agent=assigned_agent,
+            priority=priority,
+            limit=limit
+        )
+        return {
+            "success": True,
+            "tasks": summaries,
+            "count": len(summaries)
+        }
+    
+    @staticmethod
+    def bulk_unlock_tasks(
+        task_ids: List[int],
+        agent_id: str
+    ) -> Dict[str, Any]:
+        """
+        Unlock multiple tasks atomically in a single operation.
+        
+        Parameters:
+        - task_ids: list of task IDs to unlock
+        - agent_id: agent performing the unlock (for logging)
+        
+        Benefits: Single operation instead of multiple API calls, atomic transaction 
+        (all succeed or all fail), better for system maintenance operations.
+        
+        Use case: "Unlock all stale tasks" or "Unlock all tasks assigned to agent X"
+        
+        Args:
+            task_ids: List of task IDs to unlock
+            agent_id: Agent ID performing the unlock (for logging)
+            
+        Returns:
+            Dictionary with success status, unlocked_count, unlocked_task_ids, 
+            failed_count, and failed_task_ids (with error messages)
+            
+        ERROR HANDLING:
+        - Returns {"success": True, "failed_count": N, "failed_task_ids": [...]} if some tasks fail to unlock
+        - Each failed task includes error message (e.g., "Task not found", "Task not in_progress")
+        - Parameter validation errors (empty agent_id) are handled by framework validation before function is called
+        - Database transaction errors will rollback all unlocks; check "failed_task_ids" for details
+        """
+        result = get_db().bulk_unlock_tasks(task_ids=task_ids, agent_id=agent_id)
+        return result
+    
+    @staticmethod
     def update_recurring_task(
         recurring_id: int,
         recurrence_type: Optional[Literal["daily", "weekly", "monthly"]] = None,
@@ -1990,6 +2154,138 @@ MCP_FUNCTIONS = [
                 "description": "Hours threshold for stale tasks. Tasks in_progress longer than this are considered stale. Defaults to TASK_TIMEOUT_HOURS environment variable or 24 if not set. Must be a positive integer if provided.",
                 "minimum": 1,
                 "example": 24
+            }
+        }
+    },
+    {
+        "name": "get_task_statistics",
+        "description": "Get aggregated statistics about tasks without requiring Python post-processing. Returns total count, counts by status (available/in_progress/complete/blocked/cancelled), counts by task_type (concrete/abstract/epic), counts by project_id, and completion rate percentage. Use this instead of querying all tasks and counting in Python. Supports optional filters: project_id, task_type, date_range. Returns: Dictionary with total, by_status, by_type, by_project, and completion_rate.\n\nERROR HANDLING:\n- No errors typically returned - function always returns success with statistics (zeros if no tasks match filters).\n- Parameter validation errors (invalid date format, invalid task_type enum) are handled by framework validation before function is called.\n- Database errors are rare; if connection issues occur, retry with exponential backoff.",
+        "parameters": {
+            "project_id": {
+                "type": "integer",
+                "optional": True,
+                "description": "Filter statistics by project ID. If provided, statistics are scoped to this project only. Must be a positive integer if provided.",
+                "minimum": 1,
+                "example": 1
+            },
+            "task_type": {
+                "type": "string",
+                "optional": True,
+                "enum": ["concrete", "abstract", "epic"],
+                "description": "Filter statistics by task type. If provided, statistics are scoped to this task type only.",
+                "example": "concrete"
+            },
+            "start_date": {
+                "type": "string",
+                "optional": True,
+                "description": "Filter statistics for tasks created on or after this date. ISO 8601 format timestamp (e.g., '2025-01-01T00:00:00Z').",
+                "example": "2025-01-01T00:00:00Z"
+            },
+            "end_date": {
+                "type": "string",
+                "optional": True,
+                "description": "Filter statistics for tasks created on or before this date. ISO 8601 format timestamp (e.g., '2025-12-31T23:59:59Z').",
+                "example": "2025-12-31T23:59:59Z"
+            }
+        }
+    },
+    {
+        "name": "get_recent_completions",
+        "description": "Get recently completed tasks sorted by completion time (most recent first). Returns lightweight summaries with task_id, title, completed_at, agent_id, project_id. Use this to see what was recently finished without fetching full task objects. Supports optional filters: project_id, hours (completions within last N hours). Returns: Dictionary with success status, tasks list, and count.\n\nERROR HANDLING:\n- No errors typically returned - function always returns success with tasks list (empty if none found).\n- Parameter validation errors (invalid limit, negative hours) are handled by framework validation before function is called.\n- Database errors are rare; if connection issues occur, retry with exponential backoff.",
+        "parameters": {
+            "limit": {
+                "type": "integer",
+                "optional": True,
+                "default": 10,
+                "description": "Maximum number of completed tasks to return. Must be between 1 and 1000 (default: 10).",
+                "minimum": 1,
+                "maximum": 1000,
+                "example": 10
+            },
+            "project_id": {
+                "type": "integer",
+                "optional": True,
+                "description": "Filter completions by project ID. Returns only completed tasks for this project. Must be a positive integer if provided.",
+                "minimum": 1,
+                "example": 1
+            },
+            "hours": {
+                "type": "integer",
+                "optional": True,
+                "description": "Filter for completions within the last N hours. Returns only tasks completed within this time window. Must be a positive integer if provided.",
+                "minimum": 1,
+                "example": 24
+            }
+        }
+    },
+    {
+        "name": "get_task_summary",
+        "description": "Get lightweight task summaries (essential fields only) instead of full task objects. Returns only: id, title, task_type, task_status, assigned_agent, project_id, priority, created_at, updated_at, completed_at. Faster than get_task_context() for bulk queries. Supports same filters as query_tasks(). Use this when you need basic info about many tasks without full task details. Returns: Dictionary with success status, tasks list (summaries), and count.\n\nERROR HANDLING:\n- No errors typically returned - function always returns success with tasks list (empty if none match filters).\n- Parameter validation errors (invalid enum values, invalid limit) are handled by framework validation before function is called.\n- Database errors are rare; if connection issues occur, retry with exponential backoff.",
+        "parameters": {
+            "project_id": {
+                "type": "integer",
+                "optional": True,
+                "description": "Filter tasks by project ID. Must be a positive integer if provided.",
+                "minimum": 1,
+                "example": 1
+            },
+            "task_type": {
+                "type": "string",
+                "optional": True,
+                "enum": ["concrete", "abstract", "epic"],
+                "description": "Filter by task type.",
+                "example": "concrete"
+            },
+            "task_status": {
+                "type": "string",
+                "optional": True,
+                "enum": ["available", "in_progress", "complete", "blocked", "cancelled"],
+                "description": "Filter by task status.",
+                "example": "in_progress"
+            },
+            "assigned_agent": {
+                "type": "string",
+                "optional": True,
+                "description": "Filter by assigned agent ID. Returns only tasks assigned to this agent. Must be a non-empty string if provided.",
+                "minLength": 1,
+                "maxLength": 100,
+                "example": "cursor-agent"
+            },
+            "priority": {
+                "type": "string",
+                "optional": True,
+                "enum": ["low", "medium", "high", "critical"],
+                "description": "Filter by priority level.",
+                "example": "high"
+            },
+            "limit": {
+                "type": "integer",
+                "optional": True,
+                "default": 100,
+                "description": "Maximum number of results to return. Must be between 1 and 1000 (default: 100).",
+                "minimum": 1,
+                "maximum": 1000,
+                "example": 100
+            }
+        }
+    },
+    {
+        "name": "bulk_unlock_tasks",
+        "description": "Unlock multiple tasks atomically in a single operation. Use this instead of calling unlock_task() multiple times. Benefits: Single operation instead of multiple API calls, atomic transaction (all succeed or all fail), better for system maintenance. Use case: 'Unlock all stale tasks' or 'Unlock all tasks assigned to agent X'. Returns: Dictionary with success status, unlocked_count, unlocked_task_ids, failed_count, and failed_task_ids (with error messages for each failed task).\n\nERROR HANDLING:\n- Returns {\"success\": True, \"failed_count\": N, \"failed_task_ids\": [...]} if some tasks fail to unlock. Each failed task includes error message (e.g., 'Task not found', 'Task not in_progress'). Check failed_task_ids for details.\n- Parameter validation errors (empty agent_id) are handled by framework validation before function is called.\n- Database transaction errors will rollback all unlocks; check 'failed_task_ids' for details.",
+        "parameters": {
+            "task_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "description": "List of task IDs to unlock. All IDs must be positive integers. Tasks must be in_progress to be unlocked.",
+                "minItems": 1,
+                "example": [94, 86, 83, 19, 8]
+            },
+            "agent_id": {
+                "type": "string",
+                "description": "Agent ID performing the unlock (for logging). Must be a non-empty string (1-100 characters).",
+                "minLength": 1,
+                "maxLength": 100,
+                "example": "cursor-agent"
             }
         }
     },

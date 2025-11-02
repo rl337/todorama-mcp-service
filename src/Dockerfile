@@ -17,8 +17,10 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY uv.lock* ./
 
-# Install Python dependencies with UV
-RUN uv sync --frozen --no-dev
+# Export dependencies and install system-wide
+RUN uv export --format requirements.txt > /tmp/requirements.txt && \
+    pip install --no-cache-dir -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
 
 # Copy application code
 COPY src/ .

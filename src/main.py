@@ -98,21 +98,36 @@ except ImportError:
 
 # Setup structured logging
 log_level = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, log_level),
-    format='%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
 
-# Add request ID filter for structured logging
+# Add request ID filter for structured logging (must be before basicConfig)
 class RequestIDFilter(logging.Filter):
     """Filter to add request ID to log records."""
     def filter(self, record):
-        record.request_id = get_request_id() or '-'
+        # Always set request_id to avoid KeyError in format string
+        try:
+            req_id = get_request_id() if callable(get_request_id) else (get_request_id or '-')
+        except:
+            req_id = '-'
+        record.request_id = req_id
         return True
 
-# Apply filter to root logger
+# Apply filter FIRST, then configure logging
 logging.getLogger().addFilter(RequestIDFilter())
+
+# Use a custom formatter that safely handles request_id
+class SafeFormatter(logging.Formatter):
+    def format(self, record):
+        if not hasattr(record, 'request_id'):
+            record.request_id = '-'
+        return super().format(record)
+
+handler = logging.StreamHandler()
+handler.setFormatter(SafeFormatter('%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+logging.basicConfig(
+    level=getattr(logging, log_level),
+    handlers=[handler],
+    force=True
+)
 logger = logging.getLogger(__name__)
 
 # Initialize database
@@ -3181,6 +3196,37 @@ async def mcp_sse_post(request: Request):
             elif tool_name == "query_stale_tasks":
                 result = MCPTodoAPI.query_stale_tasks(
                     hours=tool_args.get("hours")
+                )
+                return {"jsonrpc": "2.0", "id": body.get("id"), "result": {"content": [{"type": "text", "text": json.dumps(result)}]}}
+            elif tool_name == "get_task_statistics":
+                result = MCPTodoAPI.get_task_statistics(
+                    project_id=tool_args.get("project_id"),
+                    task_type=tool_args.get("task_type"),
+                    start_date=tool_args.get("start_date"),
+                    end_date=tool_args.get("end_date")
+                )
+                return {"jsonrpc": "2.0", "id": body.get("id"), "result": {"content": [{"type": "text", "text": json.dumps(result)}]}}
+            elif tool_name == "get_recent_completions":
+                result = MCPTodoAPI.get_recent_completions(
+                    limit=tool_args.get("limit", 10),
+                    project_id=tool_args.get("project_id"),
+                    hours=tool_args.get("hours")
+                )
+                return {"jsonrpc": "2.0", "id": body.get("id"), "result": {"content": [{"type": "text", "text": json.dumps(result)}]}}
+            elif tool_name == "get_task_summary":
+                result = MCPTodoAPI.get_task_summary(
+                    project_id=tool_args.get("project_id"),
+                    task_type=tool_args.get("task_type"),
+                    task_status=tool_args.get("task_status"),
+                    assigned_agent=tool_args.get("assigned_agent"),
+                    priority=tool_args.get("priority"),
+                    limit=tool_args.get("limit", 100)
+                )
+                return {"jsonrpc": "2.0", "id": body.get("id"), "result": {"content": [{"type": "text", "text": json.dumps(result)}]}}
+            elif tool_name == "bulk_unlock_tasks":
+                result = MCPTodoAPI.bulk_unlock_tasks(
+                    task_ids=tool_args.get("task_ids"),
+                    agent_id=tool_args.get("agent_id")
                 )
                 return {"jsonrpc": "2.0", "id": body.get("id"), "result": {"content": [{"type": "text", "text": json.dumps(result)}]}}
             elif tool_name == "add_task_update":

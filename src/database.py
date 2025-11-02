@@ -5436,4 +5436,299 @@ class TodoDatabase:
                 logger.error(f"Failed to process recurring task {recurring['id']}: {e}", exc_info=True)
         
         return created_task_ids
+    
+    def get_task_statistics(
+        self,
+        project_id: Optional[int] = None,
+        task_type: Optional[str] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get aggregated statistics about tasks.
+        
+        Args:
+            project_id: Optional project filter
+            task_type: Optional task type filter
+            start_date: Optional start date filter (ISO format)
+            end_date: Optional end date filter (ISO format)
+            
+        Returns:
+            Dictionary with statistics including counts by status, type, project, and completion rate
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            # Build WHERE clause
+            conditions = []
+            params = []
+            
+            if project_id is not None:
+                conditions.append("project_id = ?")
+                params.append(project_id)
+            if task_type:
+                conditions.append("task_type = ?")
+                params.append(task_type)
+            if start_date:
+                conditions.append("created_at >= ?")
+                params.append(start_date)
+            if end_date:
+                conditions.append("created_at <= ?")
+                params.append(end_date)
+            
+            where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+            
+            # Total count
+            cursor.execute(f"SELECT COUNT(*) FROM tasks {where_clause}", params)
+            total = cursor.fetchone()[0]
+            
+            # Counts by status
+            status_counts = {}
+            for status in ["available", "in_progress", "complete", "blocked", "cancelled"]:
+                status_params = params + [status]
+                if conditions:
+                    status_where = f"{where_clause} AND task_status = ?"
+                else:
+                    status_where = "WHERE task_status = ?"
+                cursor.execute(
+                    f"SELECT COUNT(*) FROM tasks {status_where}",
+                    status_params
+                )
+                status_counts[status] = cursor.fetchone()[0]
+            
+            # Counts by task_type
+            type_counts = {}
+            for task_type_val in ["concrete", "abstract", "epic"]:
+                type_params = params + [task_type_val]
+                if conditions:
+                    type_where = f"{where_clause} AND task_type = ?"
+                else:
+                    type_where = "WHERE task_type = ?"
+                cursor.execute(
+                    f"SELECT COUNT(*) FROM tasks {type_where}",
+                    type_params
+                )
+                type_counts[task_type_val] = cursor.fetchone()[0]
+            
+            # Counts by project (if not filtering by project)
+            project_counts = {}
+            if project_id is None:
+                cursor.execute("SELECT project_id, COUNT(*) FROM tasks GROUP BY project_id")
+                for row in cursor.fetchall():
+                    proj_id = row[0]
+                    count = row[1]
+                    project_counts[proj_id] = count
+            
+            # Completion rate
+            completion_rate = 0.0
+            if total > 0:
+                completion_rate = (status_counts.get("complete", 0) / total) * 100
+            
+            return {
+                "total": total,
+                "by_status": status_counts,
+                "by_type": type_counts,
+                "by_project": project_counts if project_id is None else {project_id: total},
+                "completion_rate": round(completion_rate, 2)
+            }
+        finally:
+            conn.close()
+    
+    def get_recent_completions(
+        self,
+        limit: int = 10,
+        project_id: Optional[int] = None,
+        hours: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get recently completed tasks sorted by completion time.
+        
+        Args:
+            limit: Maximum number of tasks to return
+            project_id: Optional project filter
+            hours: Optional filter for completions within last N hours
+            
+        Returns:
+            List of task dictionaries (lightweight summary format)
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            
+            conditions = ["task_status = 'complete'", "completed_at IS NOT NULL"]
+            params = []
+            
+            if project_id is not None:
+                conditions.append("project_id = ?")
+                params.append(project_id)
+            
+            if hours is not None:
+                if self.db_type == "sqlite":
+                    conditions.append(f"completed_at >= datetime('now', '-{hours} hours')")
+                else:
+                    conditions.append("completed_at >= NOW() - INTERVAL ? HOUR")
+                    params.append(hours)
+            
+            where_clause = "WHERE " + " AND ".join(conditions)
+            
+            query = f"""
+                SELECT id, title, task_status, assigned_agent, project_id, 
+                       created_at, updated_at, completed_at
+                FROM tasks
+                {where_clause}
+                ORDER BY completed_at DESC
+                LIMIT ?
+            """
+            params.append(limit)
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+    
+    def get_task_summaries(
+        self,
+        project_id: Optional[int] = None,
+        task_type: Optional[str] = None,
+        task_status: Optional[str] = None,
+        assigned_agent: Optional[str] = None,
+        priority: Optional[str] = None,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Get lightweight task summaries (essential fields only).
+        
+        Args:
+            project_id: Optional project filter
+            task_type: Optional task type filter
+            task_status: Optional status filter
+            assigned_agent: Optional agent filter
+            priority: Optional priority filter
+            limit: Maximum number of results
+            
+        Returns:
+            List of task summary dictionaries with only essential fields
+        """
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            conditions = []
+            params = []
+            
+            if project_id is not None:
+                conditions.append("project_id = ?")
+                params.append(project_id)
+            if task_type:
+                conditions.append("task_type = ?")
+                params.append(task_type)
+            if task_status:
+                conditions.append("task_status = ?")
+                params.append(task_status)
+            if assigned_agent:
+                conditions.append("assigned_agent = ?")
+                params.append(assigned_agent)
+            if priority:
+                conditions.append("priority = ?")
+                params.append(priority)
+            
+            where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+            
+            query = f"""
+                SELECT id, title, task_type, task_status, assigned_agent, 
+                       project_id, priority, created_at, updated_at, completed_at
+                FROM tasks
+                {where_clause}
+                ORDER BY created_at DESC
+                LIMIT ?
+            """
+            params.append(limit)
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+        finally:
+            conn.close()
+    
+    def bulk_unlock_tasks(self, task_ids: List[int], agent_id: str) -> Dict[str, Any]:
+        """
+        Unlock multiple tasks atomically.
+        
+        Args:
+            task_ids: List of task IDs to unlock
+            agent_id: Agent ID performing the unlock
+            
+        Returns:
+            Dictionary with success status and summary of unlocked tasks
+        """
+        if not task_ids:
+            return {
+                "success": True,
+                "unlocked_count": 0,
+                "unlocked_task_ids": [],
+                "failed_count": 0,
+                "failed_task_ids": []
+            }
+        
+        if not agent_id:
+            raise ValueError("agent_id is required for bulk unlock")
+        
+        conn = self._get_connection()
+        unlocked = []
+        failed = []
+        
+        try:
+            cursor = conn.cursor()
+            
+            for task_id in task_ids:
+                try:
+                    # Get current status
+                    cursor.execute("SELECT assigned_agent, task_status FROM tasks WHERE id = ?", (task_id,))
+                    current = cursor.fetchone()
+                    
+                    if not current:
+                        failed.append({"task_id": task_id, "error": "Task not found"})
+                        continue
+                    
+                    old_status = current["task_status"]
+                    
+                    # Unlock the task
+                    cursor.execute("""
+                        UPDATE tasks 
+                        SET task_status = 'available',
+                            assigned_agent = NULL,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ? AND task_status = 'in_progress'
+                    """, (task_id,))
+                    
+                    if cursor.rowcount > 0:
+                        # Record in history
+                        cursor.execute("""
+                            INSERT INTO change_history (task_id, agent_id, change_type, field_name, old_value, new_value)
+                            VALUES (?, ?, 'unlocked', 'task_status', ?, 'available')
+                        """, (task_id, agent_id, old_status))
+                        unlocked.append(task_id)
+                    else:
+                        failed.append({"task_id": task_id, "error": "Task not in_progress"})
+                
+                except Exception as e:
+                    logger.error(f"Error unlocking task {task_id}: {e}", exc_info=True)
+                    failed.append({"task_id": task_id, "error": str(e)})
+            
+            conn.commit()
+            
+            return {
+                "success": True,
+                "unlocked_count": len(unlocked),
+                "unlocked_task_ids": unlocked,
+                "failed_count": len(failed),
+                "failed_task_ids": failed
+            }
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Bulk unlock failed: {e}", exc_info=True)
+            raise
+        finally:
+            conn.close()
 

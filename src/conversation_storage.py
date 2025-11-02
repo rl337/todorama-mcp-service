@@ -747,208 +747,207 @@ class ConversationStorage:
         ab_test_start_time = None
         model_to_use = self.llm_model  # Default to configured model
         
-        try:
-            # Handle A/B testing if test_id is provided
-            if ab_test_id and user_id and chat_id:
-                conversation_id = self.get_or_create_conversation(user_id, chat_id)
-                ab_variant = self.assign_ab_variant(conversation_id, ab_test_id)
-                test_config = self.get_ab_test(ab_test_id)
-                ab_test_start_time = datetime.now()
+        # Handle A/B testing if test_id is provided
+        if ab_test_id and user_id and chat_id:
+            conversation_id = self.get_or_create_conversation(user_id, chat_id)
+            ab_variant = self.assign_ab_variant(conversation_id, ab_test_id)
+            test_config = self.get_ab_test(ab_test_id)
+            ab_test_start_time = datetime.now()
+            
+            if test_config and ab_variant:
+                variant_config_str = test_config['variant_config'] if ab_variant == 'variant' else test_config['control_config']
+                variant_config = json.loads(variant_config_str)
                 
-                if test_config and ab_variant:
-                    variant_config_str = test_config['variant_config'] if ab_variant == 'variant' else test_config['control_config']
-                    variant_config = json.loads(variant_config_str)
+                # Override model, temperature, system_prompt from variant config
+                if 'model' in variant_config:
+                    model_to_use = variant_config['model']
+                
+                if 'temperature' in variant_config:
+                    temperature = variant_config['temperature']
+                
+                if 'system_prompt' in variant_config:
+                    system_prompt = variant_config['system_prompt']
+        
+        # Format messages for LLM API (OpenAI-compatible format)
+        formatted_messages = [
+            {"role": msg.get('role', 'user'), "content": msg.get('content', '')}
+            for msg in messages
+        ]
+        
+        # Get custom prompt template if user_id and chat_id are provided
+        template_content = None
+        if user_id and chat_id:
+            template = self.get_prompt_template_for_conversation(user_id, chat_id, "chat")
+            if template:
+                template_content = template['template_content']
+        
+        # Use custom template or provided system prompt or default
+        if template_content:
+            system_content = template_content
+        elif system_prompt:
+            system_content = system_prompt
+        else:
+            system_content = "You are a helpful assistant."
+        
+        # Add system message if provided
+        if system_content:
+            system_message = {"role": "system", "content": system_content}
+            api_messages = [system_message] + formatted_messages
+        else:
+            api_messages = formatted_messages
+        
+        # Prepare streaming request
+        headers = {
+            "Authorization": f"Bearer {self.llm_api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": model_to_use,
+            "messages": api_messages,
+            "stream": True,  # Enable streaming
+            "temperature": temperature
+        }
+        
+        if max_tokens:
+            payload["max_tokens"] = max_tokens
+        
+        # Make streaming request using httpx with async client
+        response_content = ""
+        tokens_used = None
+        input_tokens = None
+        output_tokens = None
+        error_occurred = False
+        
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.llm_api_url.rstrip('/')}/v1/chat/completions",
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    response.raise_for_status()
                     
-                    # Override model, temperature, system_prompt from variant config
-                    if 'model' in variant_config:
-                        model_to_use = variant_config['model']
-                    
-                    if 'temperature' in variant_config:
-                        temperature = variant_config['temperature']
-                    
-                    if 'system_prompt' in variant_config:
-                        system_prompt = variant_config['system_prompt']
-            
-            # Format messages for LLM API (OpenAI-compatible format)
-            formatted_messages = [
-                {"role": msg.get('role', 'user'), "content": msg.get('content', '')}
-                for msg in messages
-            ]
-            
-            # Get custom prompt template if user_id and chat_id are provided
-            template_content = None
-            if user_id and chat_id:
-                template = self.get_prompt_template_for_conversation(user_id, chat_id, "chat")
-                if template:
-                    template_content = template['template_content']
-            
-            # Use custom template or provided system prompt or default
-            if template_content:
-                system_content = template_content
-            elif system_prompt:
-                system_content = system_prompt
-            else:
-                system_content = "You are a helpful assistant."
-            
-            # Add system message if provided
-            if system_content:
-                system_message = {"role": "system", "content": system_content}
-                api_messages = [system_message] + formatted_messages
-            else:
-                api_messages = formatted_messages
-            
-            # Prepare streaming request
-            headers = {
-                "Authorization": f"Bearer {self.llm_api_key}",
-                "Content-Type": "application/json"
-            }
-            
-            payload = {
-                "model": model_to_use,
-                "messages": api_messages,
-                "stream": True,  # Enable streaming
-                "temperature": temperature
-            }
-            
-            if max_tokens:
-                payload["max_tokens"] = max_tokens
-            
-            # Make streaming request using httpx with async client
-            response_content = ""
-            tokens_used = None
-            input_tokens = None
-            output_tokens = None
-            error_occurred = False
-            
-            try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    async with client.stream(
-                        "POST",
-                        f"{self.llm_api_url.rstrip('/')}/v1/chat/completions",
-                        headers=headers,
-                        json=payload
-                    ) as response:
-                        response.raise_for_status()
+                    # Parse Server-Sent Events
+                    async for line in response.aiter_lines():
+                        if not line.strip():
+                            continue
                         
-                        # Parse Server-Sent Events
-                        async for line in response.aiter_lines():
-                            if not line.strip():
+                        # SSE format: "data: {json}"
+                        if line.startswith("data: "):
+                            data_str = line[6:]  # Remove "data: " prefix
+                            
+                            # Check for [DONE] marker
+                            if data_str.strip() == "[DONE]":
+                                break
+                            
+                            try:
+                                data = json.loads(data_str)
+                                
+                                # Extract content delta from OpenAI-compatible format
+                                if "choices" in data and len(data["choices"]) > 0:
+                                    choice = data["choices"][0]
+                                    delta = choice.get("delta", {})
+                                    content = delta.get("content", "")
+                                    
+                                    if content:
+                                        response_content += content
+                                        yield content
+                                
+                                # Track token usage if available
+                                if "usage" in data:
+                                    tokens_used = data["usage"].get("total_tokens")
+                                    # Also capture input/output tokens for cost calculation
+                                    input_tokens = data["usage"].get("prompt_tokens", 0)
+                                    output_tokens = data["usage"].get("completion_tokens", 0)
+                                    
+                            except json.JSONDecodeError:
+                                logger.warning(f"Failed to parse SSE data: {data_str}")
                                 continue
-                            
-                            # SSE format: "data: {json}"
-                            if line.startswith("data: "):
-                                data_str = line[6:]  # Remove "data: " prefix
-                                
-                                # Check for [DONE] marker
-                                if data_str.strip() == "[DONE]":
-                                    break
-                                
-                                try:
-                                    data = json.loads(data_str)
-                                    
-                                    # Extract content delta from OpenAI-compatible format
-                                    if "choices" in data and len(data["choices"]) > 0:
-                                        choice = data["choices"][0]
-                                        delta = choice.get("delta", {})
-                                        content = delta.get("content", "")
-                                        
-                                        if content:
-                                            response_content += content
-                                            yield content
-                                    
-                                    # Track token usage if available
-                                    if "usage" in data:
-                                        tokens_used = data["usage"].get("total_tokens")
-                                        # Also capture input/output tokens for cost calculation
-                                        input_tokens = data["usage"].get("prompt_tokens", 0)
-                                        output_tokens = data["usage"].get("completion_tokens", 0)
-                                        
-                                except json.JSONDecodeError:
-                                    logger.warning(f"Failed to parse SSE data: {data_str}")
-                                    continue
-                                except Exception as e:
-                                    logger.warning(f"Error processing SSE chunk: {e}")
-                                    continue
-                        
-                        logger.debug("Finished streaming LLM response")
-            
-            except httpx.HTTPError as e:
-                error_occurred = True
-                logger.error(f"HTTP error calling LLM API for streaming: {e}", exc_info=True)
-                raise
-            except Exception as e:
-                error_occurred = True
-                logger.error(f"Error streaming LLM response: {e}", exc_info=True)
-                raise
-            finally:
-                # Track cost for LLM usage
-                if user_id and conversation_id:
-                    # Estimate tokens if not available
-                    if tokens_used is None and response_content:
-                        tokens_used = len(response_content) // 4  # Rough estimate
+                            except Exception as e:
+                                logger.warning(f"Error processing SSE chunk: {e}")
+                                continue
                     
-                    if tokens_used:
-                        try:
-                            from cost_tracking import CostTracker, ServiceType
-                            cost_tracker = CostTracker()
-                            
-                            # Estimate input/output tokens if not available
-                            if input_tokens is None or output_tokens is None:
-                                # Rough estimate: 60% input, 40% output for typical conversations
-                                input_tokens = int(tokens_used * 0.6)
-                                output_tokens = tokens_used - input_tokens
-                            
-                            # Calculate cost
-                            cost = cost_tracker.calculate_llm_cost(
-                                model=model_to_use,
-                                input_tokens=input_tokens,
-                                output_tokens=output_tokens
-                            )
-                            
-                            # Record cost
-                            cost_tracker.record_cost(
-                                service_type=ServiceType.LLM,
-                                user_id=user_id,
-                                conversation_id=conversation_id,
-                                cost=cost,
-                                tokens=tokens_used,
-                                metadata={
-                                    "model": model_to_use,
-                                    "input_tokens": input_tokens,
-                                    "output_tokens": output_tokens,
-                                    "temperature": temperature,
-                                    "max_tokens": max_tokens,
-                                    "ab_test_id": ab_test_id,
-                                    "ab_variant": ab_variant
-                                }
-                            )
+                logger.debug("Finished streaming LLM response")
+        
+        except httpx.HTTPError as e:
+            error_occurred = True
+            logger.error(f"HTTP error calling LLM API for streaming: {e}", exc_info=True)
+            raise
+        except Exception as e:
+            error_occurred = True
+            logger.error(f"Error streaming LLM response: {e}", exc_info=True)
+            raise
+        finally:
+            # Track cost for LLM usage
+            if user_id and conversation_id:
+                # Estimate tokens if not available
+                if tokens_used is None and response_content:
+                    tokens_used = len(response_content) // 4  # Rough estimate
+                
+                if tokens_used:
+                    try:
+                        from cost_tracking import CostTracker, ServiceType
+                        cost_tracker = CostTracker()
+                        
+                        # Estimate input/output tokens if not available
+                        if input_tokens is None or output_tokens is None:
+                            # Rough estimate: 60% input, 40% output for typical conversations
+                            input_tokens = int(tokens_used * 0.6)
+                            output_tokens = tokens_used - input_tokens
+                        
+                        # Calculate cost
+                        cost = cost_tracker.calculate_llm_cost(
+                            model=model_to_use,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens
+                        )
+                        
+                        # Record cost
+                        cost_tracker.record_cost(
+                            service_type=ServiceType.LLM,
+                            user_id=user_id,
+                            conversation_id=conversation_id,
+                            cost=cost,
+                            tokens=tokens_used,
+                            metadata={
+                                "model": model_to_use,
+                                "input_tokens": input_tokens,
+                                "output_tokens": output_tokens,
+                                "temperature": temperature,
+                                "max_tokens": max_tokens,
+                                "ab_test_id": ab_test_id,
+                                "ab_variant": ab_variant
+                            }
+                        )
                     except Exception as e:
                         # Don't fail the request if cost tracking fails
                         logger.warning(f"Failed to track LLM cost: {e}", exc_info=True)
-                
-                # Record A/B test metrics if applicable
-                if ab_test_id and conversation_id and ab_variant:
-                    try:
-                        response_time_ms = None
-                        if ab_test_start_time:
-                            response_time_ms = int((datetime.now() - ab_test_start_time).total_seconds() * 1000)
-                        
-                        # Estimate tokens if not provided (rough estimate: 1 token ? 4 characters)
-                        if tokens_used is None and response_content:
-                            tokens_used = len(response_content) // 4
-                        
-                        self.record_ab_metric(
-                            test_id=ab_test_id,
-                            conversation_id=conversation_id,
-                            variant=ab_variant,
-                            response_time_ms=response_time_ms,
-                            tokens_used=tokens_used,
-                            error_occurred=error_occurred
-                        )
-                    except Exception as e:
-                        # Don't fail the request if metrics recording fails
-                        logger.warning(f"Failed to record A/B test metrics: {e}", exc_info=True)
-    
+            
+            # Record A/B test metrics if applicable
+            if ab_test_id and conversation_id and ab_variant:
+                try:
+                    response_time_ms = None
+                    if ab_test_start_time:
+                        response_time_ms = int((datetime.now() - ab_test_start_time).total_seconds() * 1000)
+                    
+                    # Estimate tokens if not provided (rough estimate: 1 token ? 4 characters)
+                    if tokens_used is None and response_content:
+                        tokens_used = len(response_content) // 4
+                    
+                    self.record_ab_metric(
+                        test_id=ab_test_id,
+                        conversation_id=conversation_id,
+                        variant=ab_variant,
+                        response_time_ms=response_time_ms,
+                        tokens_used=tokens_used,
+                        error_occurred=error_occurred
+                    )
+                except Exception as e:
+                    # Don't fail the request if metrics recording fails
+                    logger.warning(f"Failed to record A/B test metrics: {e}", exc_info=True)
+
     def summarize_old_messages(
         self,
         user_id: str,
