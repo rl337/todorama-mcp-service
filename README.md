@@ -327,6 +327,68 @@ export RATE_LIMIT_GLOBAL_WINDOW=60
 export RATE_LIMIT_ENDPOINT_OVERRIDES="/health:500:60,/mcp/sse:10:60"
 ```
 
+### Security Headers
+
+The service automatically adds security headers to all HTTP responses to protect against common web vulnerabilities. All headers are configurable via environment variables:
+
+#### Standard Security Headers
+
+- **X-Content-Type-Options**: Prevents MIME type sniffing
+  - `SECURITY_HEADER_X_CONTENT_TYPE_OPTIONS` (default: `nosniff`)
+
+- **X-Frame-Options**: Prevents clickjacking attacks
+  - `SECURITY_HEADER_X_FRAME_OPTIONS` (default: `DENY`, options: `DENY`, `SAMEORIGIN`)
+
+- **X-XSS-Protection**: Legacy XSS protection (for older browsers)
+  - `SECURITY_HEADER_X_XSS_PROTECTION` (default: `1; mode=block`)
+
+- **Referrer-Policy**: Controls referrer information sent with requests
+  - `SECURITY_HEADER_REFERRER_POLICY` (default: `strict-origin-when-cross-origin`)
+
+- **Content-Security-Policy**: Restricts resource loading to prevent XSS
+  - `SECURITY_HEADER_CSP` (default: restrictive policy, customizable)
+
+- **Permissions-Policy**: Restricts browser features and APIs
+  - `SECURITY_HEADER_PERMISSIONS_POLICY` (default: restrictive permissions)
+
+- **Cross-Origin-Opener-Policy**: Isolates browsing context
+  - `SECURITY_HEADER_CROSS_ORIGIN_OPENER_POLICY` (default: `same-origin`)
+
+- **Cross-Origin-Resource-Policy**: Restricts resource loading
+  - `SECURITY_HEADER_CROSS_ORIGIN_RESOURCE_POLICY` (default: `same-origin`)
+
+- **Cross-Origin-Embedder-Policy**: Requires CORP headers (optional, disabled by default)
+  - `SECURITY_HEADER_COEP_ENABLED` (default: `false`)
+  - `SECURITY_HEADER_CROSS_ORIGIN_EMBEDDER_POLICY` (default: `require-corp`)
+
+#### HSTS (HTTP Strict Transport Security)
+
+HSTS is only set when both conditions are met:
+1. `SECURITY_HSTS_ENABLED=true`
+2. Request is over HTTPS (or uses `X-Forwarded-Proto: https` header)
+
+Configuration:
+- `SECURITY_HSTS_ENABLED`: Enable HSTS (default: `false`)
+- `SECURITY_HSTS_MAX_AGE`: Max age in seconds (default: `31536000` = 1 year)
+- `SECURITY_HSTS_INCLUDE_SUBDOMAINS`: Include subdomains (default: `true`)
+- `SECURITY_HSTS_PRELOAD`: Enable HSTS preload (default: `false`)
+
+Example configuration:
+```bash
+# Enable HSTS for HTTPS deployments
+export SECURITY_HSTS_ENABLED=true
+export SECURITY_HSTS_MAX_AGE=31536000
+export SECURITY_HSTS_INCLUDE_SUBDOMAINS=true
+
+# Customize CSP policy
+export SECURITY_HEADER_CSP="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
+
+# Allow same-origin framing
+export SECURITY_HEADER_X_FRAME_OPTIONS=SAMEORIGIN
+```
+
+**Note**: Security headers are automatically applied to all endpoints. No additional configuration is required for basic operation.
+
 ## Production Deployment
 
 ### Resource Limits

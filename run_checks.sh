@@ -112,6 +112,7 @@ run_tests() {
         "tests/test_integration.py"
         "tests/test_cli.py"
         "tests/test_conversation_storage.py"
+        "tests/test_security_headers.py"
     )
     
     local failed_tests=0
