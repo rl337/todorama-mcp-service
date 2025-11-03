@@ -108,6 +108,7 @@ run_tests() {
         "tests/test_backup.py"
         "tests/test_api.py"
         "tests/test_mcp_api.py"
+        "tests/test_e2e_agent_workflows.py"
         "tests/test_graphql.py"
         "tests/test_integration.py"
         "tests/test_cli.py"

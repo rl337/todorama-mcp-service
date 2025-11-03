@@ -7,8 +7,10 @@
 
 set -euo pipefail
 
+HOSTNAME=$(hostname)
+
 # Configuration
-AGENT_ID="${CURSOR_AGENT_ID:-cursor-agent}"
+AGENT_ID="${CURSOR_AGENT_ID:-cursor-${HOSTNAME}-cli}"
 PROJECT_ID="${CURSOR_PROJECT_ID:-}"
 AGENT_TYPE="${CURSOR_AGENT_TYPE:-implementation}"
 SLEEP_INTERVAL="${CURSOR_SLEEP_INTERVAL:-60}"
@@ -78,13 +80,6 @@ while true; do
         break
     fi
     
-    # Use cursor-agent with explicit MCP task workflow
-    # The agent should:
-    # 1. Call list_available_tasks() via MCP
-    # 2. Call reserve_task() to lock a task
-    # 3. Work on the task
-    # 4. Call complete_task() on success or unlock_task() on failure
-    
     log "Starting task iteration #${LOOP_COUNT}${MAX_LOOPS:+ / ${MAX_LOOPS}}..."
 
     cursor-agent mcp list | grep "todo"
@@ -99,13 +94,9 @@ while true; do
         exit 1
     fi
     
-    if cursor-agent agent \
-        -p \
-        --model=auto \
-        --stream-partial-output \
-        --force \
-        --approve-mcps \
-        "Use the MCP TODO service tools directly (available through Cursor's MCP integration) to work on tasks. DO NOT create scripts or make HTTP requests - use the MCP tools directly. Follow this workflow:
+    AGENT_PROMPT="
+        Your agent-id is $AGENT_ID
+        Use the MCP TODO service tools directly (available through Cursor's MCP integration) to work on tasks. DO NOT create scripts or make HTTP requests - use the MCP tools directly. Follow this workflow:
         
         IMPORTANT: The MCP tools are already available to you. Use them directly with the 'todo-' prefix:
           - todo-query_tasks() - NOT query_tasks() or HTTP requests
@@ -132,9 +123,10 @@ while true; do
           - If no tasks are found, proceed to STEP 2
         
         STEP 2: Pick up a new task (only if you have no in-progress tasks)
-          - Call todo-list_available_tasks(agent_type='$AGENT_TYPE', project_id=${PROJECT_ID:-None}, limit=1) to find available tasks
+          - Call todo-list_available_tasks(agent_type='$AGENT_TYPE', project_id=${PROJECT_ID:-None}, limit=10) to find available tasks
           - If a task is found, call todo-reserve_task(task_id=<id>, agent_id='$AGENT_ID') to lock it
           - Get full context: call todo-get_task_context(task_id=<id>) to see previous work, updates, and stale warnings
+          - Note: Tasks may be regular implementation tasks OR verification tasks (complete but unverified) - both work the same way
         
         STEP 3: Review previous work and check git status
           - Read all previous updates from the context to understand what was already tried
@@ -145,11 +137,13 @@ while true; do
         STEP 4: Work on the task
           - Continue from where previous work left off (don't start from scratch)
           - Follow the task_instruction and verification_instruction from the task context
+          - For verification tasks (tasks showing needs_verification=True): Review the verification_instruction and verify the completed work satisfies those requirements
           - Add progress updates using todo-add_task_update() as you work
           - Check git status regularly to see what changes you're making
         
-        STEP 5: Complete or unlock
+        STEP 5: Complete the task
           - If successful, call todo-complete_task(task_id=<id>, agent_id='$AGENT_ID', notes='<completion notes>')
+          - IMPORTANT: If the task is already complete but unverified, calling todo-complete_task() will automatically mark it as verified - no special handling needed!
           - If you cannot complete it, call todo-unlock_task(task_id=<id>, agent_id='$AGENT_ID') - THIS IS MANDATORY
           - Report success or failure
         
@@ -157,9 +151,18 @@ while true; do
         - Always check for your existing in-progress tasks BEFORE picking up new ones
         - Always check git status and previous updates before starting work
         - Always call either todo-complete_task() or todo-unlock_task() when done - never leave a task in_progress
+        - Verification is transparent: if a task is complete but unverified, just complete it normally - the backend handles verification automatically
         - If you encounter any error that prevents completion, call todo-unlock_task() before exiting
         - Continue existing work rather than starting fresh
-        - DO NOT create scripts or make HTTP requests - use the MCP tools directly!" \
+        - DO NOT create scripts or make HTTP requests - use the MCP tools directly!"
+    
+    if cursor-agent agent \
+        -p \
+        --model=auto \
+        --stream-partial-output \
+        --force \
+        --approve-mcps \
+        "${AGENT_PROMPT}" \
         --output-format stream-json; then
         
         log_success "Task completed successfully"

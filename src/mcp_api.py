@@ -35,6 +35,24 @@ def get_db() -> TodoDatabase:
     return _db_instance
 
 
+def _add_computed_status_fields(task_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Add computed status fields to a task dictionary.
+    
+    Adds:
+    - needs_verification: True if task is complete but unverified
+    - effective_status: Display status (needs_verification or actual task_status)
+    """
+    task_dict = dict(task_dict)  # Make a copy
+    if task_dict.get("task_status") == "complete" and task_dict.get("verification_status") == "unverified":
+        task_dict["needs_verification"] = True
+        task_dict["effective_status"] = "needs_verification"
+    else:
+        task_dict["needs_verification"] = False
+        task_dict["effective_status"] = task_dict.get("task_status", "available")
+    return task_dict
+
+
 class MCPTodoAPI:
     """Minimal MCP API for TODO service."""
     
@@ -64,7 +82,7 @@ class MCPTodoAPI:
             }
         ):
             tasks = get_db().get_available_tasks_for_agent(agent_type, project_id=project_id, limit=limit)
-            result = [dict(task) for task in tasks]
+            result = [_add_computed_status_fields(dict(task)) for task in tasks]
             add_span_attribute("mcp.tasks_count", len(result))
             return result
     
@@ -97,16 +115,32 @@ class MCPTodoAPI:
                     "error": f"Task {task_id} not found. Please verify the task_id is correct."
                 }
             
-            success = get_db().lock_task(task_id, agent_id)
-            if not success:
-                current_status = task.get("task_status", "unknown")
+            # Allow locking tasks in needs_verification state (complete but unverified)
+            # These tasks should be lockable for verification work
+            task_status = task.get("task_status", "unknown")
+            verification_status = task.get("verification_status", "unverified")
+            is_needs_verification = task_status == "complete" and verification_status == "unverified"
+            
+            # Only allow locking if task is available OR in needs_verification state
+            if task_status != "available" and not is_needs_verification:
                 assigned_to = task.get("assigned_agent", "none")
                 add_span_attribute("mcp.success", False)
                 add_span_attribute("mcp.error", "cannot_lock")
-                add_span_attribute("mcp.current_status", current_status)
+                add_span_attribute("mcp.current_status", task_status)
                 return {
                     "success": False,
-                    "error": f"Task {task_id} cannot be locked. Current status: {current_status}, assigned to: {assigned_to}. Only tasks with status 'available' can be locked."
+                    "error": f"Task {task_id} cannot be locked. Current status: {task_status}, assigned to: {assigned_to}. Only tasks with status 'available' or in 'needs_verification' state (complete but unverified) can be locked."
+                }
+            
+            success = get_db().lock_task(task_id, agent_id)
+            if not success:
+                assigned_to = task.get("assigned_agent", "none")
+                add_span_attribute("mcp.success", False)
+                add_span_attribute("mcp.error", "cannot_lock")
+                add_span_attribute("mcp.current_status", task_status)
+                return {
+                    "success": False,
+                    "error": f"Task {task_id} cannot be locked. Task is assigned to: {assigned_to}. It may already be locked by another agent."
                 }
             
             # Check for stale status - look for recent "finding" updates that indicate task was abandoned
@@ -129,7 +163,8 @@ class MCPTodoAPI:
             
             # Refresh task data after locking
             updated_task = get_db().get_task(task_id)
-            result = {"success": True, "task": dict(updated_task)}
+            task_dict = _add_computed_status_fields(dict(updated_task))
+            result = {"success": True, "task": task_dict}
             if stale_warning:
                 result["stale_warning"] = stale_warning
             add_span_attribute("mcp.success", True)
@@ -190,7 +225,35 @@ class MCPTodoAPI:
                     "error": f"Task {task_id} is currently assigned to agent '{current_agent}'. Only the assigned agent can complete this task."
                 }
             
-            # Complete the task
+            # Check if task is already complete but unverified - this means it's a verification task
+            # A task needs verification if: it has a completed_at timestamp but verification_status is unverified
+            # Note: The task might be in_progress (if it was reserved for verification) but still needs verification
+            task_status = task.get("task_status")
+            verification_status = task.get("verification_status", "unverified")
+            completed_at = task.get("completed_at")
+            
+            # If task was previously completed (has completed_at) but is unverified, treat this as verification
+            if completed_at and verification_status == "unverified":
+                # This is a verification task - verify it instead of completing again
+                try:
+                    get_db().verify_task(task_id, agent_id, notes=notes)
+                    add_span_attribute("mcp.success", True)
+                    add_span_attribute("mcp.action", "verified")
+                    return {
+                        "success": True,
+                        "task_id": task_id,
+                        "verified": True,
+                        "message": f"Task {task_id} verified by agent {agent_id}"
+                    }
+                except Exception as e:
+                    add_span_attribute("mcp.success", False)
+                    add_span_attribute("mcp.error", str(e))
+                    return {
+                        "success": False,
+                        "error": f"Failed to verify task {task_id}: {str(e)}"
+                    }
+            
+            # Regular completion - complete the task
             get_db().complete_task(task_id, agent_id, notes=notes, actual_hours=actual_hours)
             
             result = {"success": True, "task_id": task_id, "completed": True}
@@ -383,6 +446,62 @@ class MCPTodoAPI:
             }
     
     @staticmethod
+    def verify_task(task_id: int, agent_id: str, notes: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Verify a task's completion. This is used internally and via REST API, but not exposed as an MCP tool.
+        Agents should use complete_task() instead, which handles verification automatically.
+        
+        Args:
+            task_id: Task ID to verify
+            agent_id: Agent ID verifying the task
+            notes: Optional notes about verification
+            
+        Returns:
+            Dictionary with verification status
+        """
+        with trace_span(
+            "mcp.verify_task",
+            attributes={
+                "mcp.task_id": task_id,
+                "mcp.agent_id": agent_id,
+            }
+        ) as span:
+            task = get_db().get_task(task_id)
+            if not task:
+                add_span_attribute("mcp.success", False)
+                add_span_attribute("mcp.error", "task_not_found")
+                return {
+                    "success": False,
+                    "error": f"Task {task_id} not found. Please verify the task_id is correct."
+                }
+            
+            # Check if task is already verified
+            if task.get("verification_status") == "verified":
+                add_span_attribute("mcp.success", False)
+                add_span_attribute("mcp.error", "already_verified")
+                return {
+                    "success": False,
+                    "error": f"Task {task_id} is already verified. No action needed."
+                }
+            
+            # Verify the task
+            try:
+                get_db().verify_task(task_id, agent_id, notes=notes)
+                add_span_attribute("mcp.success", True)
+                return {
+                    "success": True,
+                    "task_id": task_id,
+                    "message": f"Task {task_id} verified by agent {agent_id}"
+                }
+            except Exception as e:
+                add_span_attribute("mcp.success", False)
+                add_span_attribute("mcp.error", str(e))
+                return {
+                    "success": False,
+                    "error": f"Failed to verify task {task_id}: {str(e)}"
+                }
+    
+    @staticmethod
     def query_tasks(
         project_id: Optional[int] = None,
         task_type: Optional[Literal["concrete", "abstract", "epic"]] = None,
@@ -422,7 +541,7 @@ class MCPTodoAPI:
             order_by=order_by,
             limit=limit
         )
-        return [dict(task) for task in tasks]
+        return [_add_computed_status_fields(dict(task)) for task in tasks]
     
     @staticmethod
     def query_stale_tasks(hours: Optional[int] = None) -> Dict[str, Any]:
@@ -440,7 +559,7 @@ class MCPTodoAPI:
         
         return {
             "success": True,
-            "stale_tasks": [dict(task) for task in stale_tasks],
+            "stale_tasks": [_add_computed_status_fields(dict(task)) for task in stale_tasks],
             "count": len(stale_tasks),
             "timeout_hours": timeout_hours
         }
@@ -625,10 +744,10 @@ class MCPTodoAPI:
             
             result = {
                 "success": True,
-                "task": dict(task),
+                "task": _add_computed_status_fields(dict(task)),
                 "project": dict(project) if project else None,
                 "updates": [dict(u) for u in updates],
-                "ancestry": ancestry,
+                "ancestry": [_add_computed_status_fields(dict(t)) for t in ancestry],
                 "recent_changes": [dict(ch) for ch in recent_changes[:10]]  # Last 10 non-update changes
             }
             
@@ -717,7 +836,7 @@ class MCPTodoAPI:
         tasks = get_db().get_tasks_approaching_deadline(days_ahead=days_ahead, limit=limit)
         return {
             "success": True,
-            "tasks": [dict(task) for task in tasks],
+            "tasks": [_add_computed_status_fields(dict(task)) for task in tasks],
             "days_ahead": days_ahead
         }
     
@@ -1423,7 +1542,7 @@ class MCPTodoAPI:
         )
         return {
             "success": True,
-            "tasks": completions,
+            "tasks": [_add_computed_status_fields(dict(task)) for task in completions],
             "count": len(completions)
         }
     

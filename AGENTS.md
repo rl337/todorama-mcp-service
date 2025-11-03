@@ -22,7 +22,39 @@
    - Backup/restore functionality must be tested
    - MCP API functions must be tested
 
+## Agent Identification
+
+**All agents MUST provide an `agent_id` when calling MCP functions that require it.**
+
+### Agent ID Rules:
+
+1. **If an agent-id is explicitly specified** (e.g., via environment variable `CURSOR_AGENT_ID`), use that value.
+
+2. **If an agent-id is NOT specified**, use `agent-unset` as the default agent-id.
+
+3. **When calling MCP functions**, always provide the `agent_id` parameter:
+   ```python
+   # Example: If CURSOR_AGENT_ID is set, use it; otherwise use "agent-unset"
+   agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
+   
+   # Use in MCP calls
+   mcp_todo_reserve_task(task_id=123, agent_id=agent_id)
+   mcp_todo_add_task_update(task_id=123, agent_id=agent_id, content="...", update_type="progress")
+   mcp_todo_complete_task(task_id=123, agent_id=agent_id, notes="...")
+   ```
+
+4. **Why this matters:**
+   - Agent IDs distinguish who performed what actions in the system
+   - Logs and task history track actions by agent
+   - This enables debugging, performance tracking, and accountability
+   - Using `agent-unset` as default ensures actions are still tracked even when agent-id isn't explicitly configured
+
 ## Development Workflow
+
+## When starting a task
+1. Consider how much work the task is.  If it is a lot of work, creating subtasks
+2. If a task seems critical in its functionality proactively add tasks to deeply very / test what was implemented
+3. If there is something outside of the scope of work that should be cleaned up create a task to specifically clean that up
 
 ### Before Starting Work
 1. Read the task description and acceptance criteria
@@ -365,12 +397,15 @@ The TODO service exposes MCP tools that are automatically available to you. Use 
 
 1. **Start working on a task (use MCP tools directly):**
    ```python
+   import os
+   agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
+   
    task_id = None
    try:
        # Use mcp_todo_list_available_tasks - it's already available as a tool
        tasks = mcp_todo_list_available_tasks(agent_type="implementation", project_id=1)
        # Use mcp_todo_reserve_task - it's already available as a tool
-       task = mcp_todo_reserve_task(task_id=123, agent_id="my-agent-id")
+       task = mcp_todo_reserve_task(task_id=123, agent_id=agent_id)
        task_id = 123
    except Exception as e:
        logger.error(f"Failed to reserve task: {e}")
@@ -380,8 +415,8 @@ The TODO service exposes MCP tools that are automatically available to you. Use 
 2. **While working (use MCP tools directly):**
    ```python
    # Use mcp_todo_add_task_update - it's already available as a tool
-   mcp_todo_add_task_update(task_id=task_id, agent_id="my-agent-id", content="Making progress...", update_type="progress")
-   mcp_todo_add_task_update(task_id=task_id, agent_id="my-agent-id", content="Found an issue", update_type="blocker")
+   mcp_todo_add_task_update(task_id=task_id, agent_id=agent_id, content="Making progress...", update_type="progress")
+   mcp_todo_add_task_update(task_id=task_id, agent_id=agent_id, content="Found an issue", update_type="blocker")
    ```
 
 3. **Get context when needed (use MCP tools directly):**
@@ -393,13 +428,13 @@ The TODO service exposes MCP tools that are automatically available to you. Use 
 4. **🚨 MANDATORY: Complete the task when done (use MCP tools directly):**
    ```python
    # Use mcp_todo_complete_task - it's already available as a tool
-   mcp_todo_complete_task(task_id=task_id, agent_id="my-agent-id", notes="Completed successfully")
+   mcp_todo_complete_task(task_id=task_id, agent_id=agent_id, notes="Completed successfully")
    ```
 
 5. **🚨 MANDATORY: If unable to complete, unlock immediately (use MCP tools directly):**
    ```python
    # Use mcp_todo_unlock_task - it's already available as a tool
-   mcp_todo_unlock_task(task_id=task_id, agent_id="my-agent-id")
+   mcp_todo_unlock_task(task_id=task_id, agent_id=agent_id)
    ```
 
 **REMINDER: These are MCP tools that Cursor exposes automatically. You don't need to import anything or create scripts - just call them directly like any other tool.**
@@ -576,8 +611,9 @@ Agents currently pick up new tasks without checking if they already have work in
 ### Complete Workflow Example: Continuing Existing or Starting New
 
 ```python
+import os
+agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
 task_id = None
-agent_id = "my-agent-id"
 
 try:
     # 1. FIRST: Check for tasks already assigned to you
@@ -754,8 +790,9 @@ Task completion/unlocking is **NOT OPTIONAL** - it is **MANDATORY** for system o
 
 4. **Example error handling that ensures unlock on failure:**
    ```python
+   import os
+   agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
    task_id = None
-   agent_id = "my-agent-id"
    
    try:
        # Reserve the task
@@ -796,15 +833,20 @@ Task completion/unlocking is **NOT OPTIONAL** - it is **MANDATORY** for system o
            raise
    
    # Usage:
-   with work_on_task(task_id=123, agent_id="my-agent-id"):
+   import os
+   agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
+   with work_on_task(task_id=123, agent_id=agent_id):
        do_work()  # Automatic unlock if exception occurs
    ```
 
 6. **Document the workflow: try/except blocks that guarantee unlock:**
    - **Every agent MUST follow this pattern when working on tasks:**
      ```python
+     import os
+     agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
+     
      # 1. Reserve task
-     task = reserve_task(task_id=123, agent_id="my-agent-id")
+     task = reserve_task(task_id=123, agent_id=agent_id)
      
      # 2. Wrap ALL work in try/except/finally
      try:
@@ -812,17 +854,17 @@ Task completion/unlocking is **NOT OPTIONAL** - it is **MANDATORY** for system o
          process_task()
          
          # 3. Complete if successful
-         complete_task(task_id=123, agent_id="my-agent-id", notes="Done")
+         complete_task(task_id=123, agent_id=agent_id, notes="Done")
          
      except Exception as e:
          # 4. ALWAYS unlock on any error
-         unlock_task(task_id=123, agent_id="my-agent-id")
+         unlock_task(task_id=123, agent_id=agent_id)
          raise  # Re-raise to maintain error visibility
      
      # Note: You can also use finally block:
      # finally:
      #     if not completed:
-     #         unlock_task(task_id=123, agent_id="my-agent-id")
+     #         unlock_task(task_id=123, agent_id=agent_id)
      ```
 
 ### Task Cleanup and Stale Task Prevention
@@ -870,8 +912,9 @@ Task completion/unlocking is **NOT OPTIONAL** - it is **MANDATORY** for system o
 If your agent framework supports MCP:
 ```python
 # Good - using MCP with mandatory error handling
+import os
+agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
 task_id = 123
-agent_id = "my-agent"
 
 try:
     # Reserve the task
@@ -904,13 +947,17 @@ except Exception as e:
 ```python
 # Bad - direct API calls (DON'T DO THIS)
 import requests
-response = requests.post("http://localhost:5080/mcp/reserve_task", json={"task_id": 123, "agent_id": "my-agent"})
+import os
+agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
+response = requests.post("http://localhost:5080/mcp/reserve_task", json={"task_id": 123, "agent_id": agent_id})
 # Don't do this - use MCP functions instead!
 ```
 
 ```python
 # Bad - missing error handling (DON'T DO THIS)
-task = mcp.call("reserve_task", {"task_id": 123, "agent_id": "my-agent"})
+import os
+agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
+task = mcp.call("reserve_task", {"task_id": 123, "agent_id": agent_id})
 do_work()  # If this fails, task stays locked forever!
 # Missing: complete_task or unlock_task
 ```
@@ -969,6 +1016,9 @@ When working on a task, if you discover it's too large or complex:
 
 2. **Example workflow:**
    ```python
+   import os
+   agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
+   
    # While working on task 123, you realize it needs to be split:
    parent_task_id = 123
    
@@ -978,7 +1028,7 @@ When working on a task, if you discover it's too large or complex:
        task_type="concrete",
        task_instruction="Create POST /auth/login endpoint with JWT token generation",
        verification_instruction="Test endpoint with valid/invalid credentials, verify JWT token format",
-       agent_id="my-agent",
+       agent_id=agent_id,
        project_id=1,
        parent_task_id=parent_task_id,
        relationship_type="subtask"
@@ -989,7 +1039,7 @@ When working on a task, if you discover it's too large or complex:
        task_type="concrete",
        task_instruction="Create middleware to validate JWT tokens on protected routes",
        verification_instruction="Test middleware rejects invalid tokens, accepts valid tokens",
-       agent_id="my-agent",
+       agent_id=agent_id,
        project_id=1,
        parent_task_id=parent_task_id,
        relationship_type="subtask"
@@ -1016,13 +1066,16 @@ When working on a task, if you discover it's too large or complex:
 
 3. **Example:**
    ```python
+   import os
+   agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
+   
    # While working on task 123, you notice a refactoring opportunity:
    create_task(
        title="Refactor database.py to use connection pooling",
        task_type="concrete",
        task_instruction="Replace direct SQLite connections with connection pool to improve performance under load. Current code creates new connection per query which is inefficient.",
        verification_instruction="Verify connection pooling reduces connection overhead, run performance tests comparing before/after",
-       agent_id="my-agent",
+       agent_id=agent_id,
        project_id=1,
        parent_task_id=123,  # Related to current work
        relationship_type="related",
@@ -1050,13 +1103,16 @@ When working on a task, if you discover it's too large or complex:
 
 3. **Example:**
    ```python
+   import os
+   agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
+   
    # You notice duplicated validation logic:
    create_task(
        title="Extract common validation logic into shared module",
        task_type="concrete",
        task_instruction="Three endpoints (A, B, C) have identical validation logic. Extract to shared validation module to reduce duplication and ensure consistency.",
        verification_instruction="Verify all three endpoints use new validation module, no duplicated code remains, tests still pass",
-       agent_id="my-agent",
+       agent_id=agent_id,
        project_id=1,
        priority="medium",
        estimated_hours=2.0,
@@ -1081,13 +1137,16 @@ When working on a task, if you discover it's too large or complex:
 
 3. **Example:**
    ```python
+   import os
+   agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
+   
    # You're refactoring code but notice missing tests:
    create_task(
        title="Add integration tests for MCP bulk operations",
        task_type="concrete",
        task_instruction="Add comprehensive integration tests for bulk_unlock_tasks, bulk_create_tasks, and other bulk MCP operations. Test partial failures, transaction rollback, and error handling.",
        verification_instruction="Verify all bulk operations have integration tests, edge cases covered, tests pass, coverage increased",
-       agent_id="my-agent",
+       agent_id=agent_id,
        project_id=2,
        priority="high",
        estimated_hours=4.0,
@@ -1109,8 +1168,11 @@ When working on a task, if you discover it's too large or complex:
 
 **Recommended workflow when working on a task:**
 ```python
+import os
+agent_id = os.getenv("CURSOR_AGENT_ID", "agent-unset")
+
 # 1. Reserve your main task
-task = reserve_task(task_id=123, agent_id="my-agent")
+task = reserve_task(task_id=123, agent_id=agent_id)
 task_id = 123
 
 try:
@@ -1131,7 +1193,7 @@ try:
         ideas.append(("improvement", "description"))
     
     # 5. Complete main task first
-    complete_task(task_id=task_id, agent_id="my-agent", notes="Main feature implemented")
+    complete_task(task_id=task_id, agent_id=agent_id, notes="Main feature implemented")
     
     # 6. Create tasks for all ideas (don't forget!)
     for idea_type, description in ideas:
@@ -1140,14 +1202,14 @@ try:
             task_type="concrete",
             task_instruction=description["instruction"],
             verification_instruction=description["verification"],
-            agent_id="my-agent",
+            agent_id=agent_id,
             project_id=task["project_id"],
             priority="medium",
             notes=f"Noticed while working on task {task_id}"
         )
         
 except Exception as e:
-    unlock_task(task_id=task_id, agent_id="my-agent")
+    unlock_task(task_id=task_id, agent_id=agent_id)
     raise
 ```
 
@@ -1166,11 +1228,400 @@ except Exception as e:
 - Ensures good ideas and improvements are captured
 - Makes the codebase progressively better over time
 
+## Task Verification
+
+### Overview
+
+When a task is marked `complete` but has `verification_status="unverified"`, it is in a **`needs_verification` state**. The TODO service displays this as `effective_status="needs_verification"` and sets `needs_verification=True`.
+
+**Agents don't need to understand the mechanics** - they just need to:
+1. Pick up tasks that show `needs_verification=True` or `effective_status="needs_verification"`
+2. Verify the task satisfies its `verification_instruction`
+3. Complete it using `complete_task()` - if the task is already complete but unverified, completing it will automatically mark it as verified.
+
+### Working on Verification Tasks
+
+**Verification is now transparent to agents - no special handling needed!**
+
+Tasks that need verification (complete but unverified) appear in `list_available_tasks()` just like regular tasks. When you work on them:
+
+1. **Reserve the task** (same as any task):
+   ```python
+   task_context = reserve_task(task_id=165, agent_id=agent_id)
+   task = task_context["task"]
+   
+   # Check the verification_instruction field - this tells you what to verify
+   verification_instruction = task["verification_instruction"]
+   ```
+
+2. **Evaluate against verification instructions:**
+   - Review the task's `verification_instruction` field
+   - Check if the work satisfies those instructions
+   - Test the implementation (run tests, check functionality, review code)
+   - Verify all requirements are met
+   - Check if code is committed (if applicable)
+
+3. **Complete the task** (same as any task):
+   ```python
+   # If verification passes, just complete the task normally
+   # The backend automatically detects that it's already complete but unverified
+   # and marks it as verified instead of completing again
+   
+   complete_task(
+       task_id=task_id,
+       agent_id=agent_id,
+       notes="Verification PASSED. All verification instructions satisfied. Tests pass, functionality works as specified."
+   )
+   # This will automatically:
+   # - Mark verification_status as "verified" (if task was complete but unverified)
+   # - Or complete the task normally (if task was in_progress)
+   ```
+
+   **If verification fails:**
+   ```python
+   # Add update explaining the failure
+   add_task_update(
+       task_id=task_id,
+       agent_id=agent_id,
+       content=f"Verification FAILED. Issues found: [describe]. Task unlocked for fixes.",
+       update_type="blocker"
+   )
+   
+   # Create followup task explaining the issue
+   followup = create_task(
+       title=f"Fix verification issues for task {task_id}: {task['title']}",
+       task_type="concrete",
+       task_instruction=f"Task {task_id} failed verification. Issues: [describe]. Please fix or improve verification instructions.",
+       verification_instruction="Verify issues are resolved.",
+       agent_id=agent_id,
+       project_id=task["project_id"],
+       parent_task_id=task_id,
+       relationship_type="related",
+       priority="high"
+   )
+   
+   # Unlock the task so it can be fixed
+   unlock_task(task_id=task_id, agent_id=agent_id)
+   ```
+
+### Important Notes
+
+- **No special verification workflow needed** - verification tasks are handled exactly like regular tasks
+- **Complete automatically verifies** - When you call `complete_task()` on a task that's already complete but unverified, it automatically marks it as verified
+- **Transparent to agents** - From the agent's perspective, there's no difference between implementation tasks and verification tasks
+- **Tasks needing verification appear in `list_available_tasks()`** - They show up as regular available tasks with `needs_verification=True` or `effective_status="needs_verification"` for informational purposes only
+
+## Refactoring Large Hub Files
+
+**When a file becomes large (e.g., >2000 lines) or has complex import dependencies, it should be broken down into smaller, focused modules using design patterns.**
+
+### When to Refactor
+
+Refactor when you notice:
+- **File size**: >2000 lines is a strong indicator
+- **Import complexity**: Many optional imports with try/except blocks
+- **Mixed concerns**: Multiple domains in one file (e.g., auth, endpoints, models, middleware)
+- **Hard to navigate**: Difficult to find specific functionality
+- **Test complexity**: Tests require mocking many dependencies
+
+### Design Patterns for Refactoring
+
+Use these patterns to organize code:
+
+#### 1. **Adapter Pattern** - For External Dependencies
+When integrating multiple external services with similar interfaces:
+
+```python
+# Instead of direct imports in main.py:
+from service_a import ServiceA
+from service_b import ServiceB
+
+# Create adapters:
+# src/adapters/job_queue_adapter.py
+class JobQueueAdapter:
+    """Adapter for job queue implementations."""
+    def __init__(self):
+        self._queue = self._create_queue()
+    
+    def _create_queue(self):
+        try:
+            from job_queue import JobQueue
+            return JobQueue(...)
+        except ImportError:
+            return None
+```
+
+#### 1.5. **Third-Party Library Isolation** - For External Libraries
+**When you have more than 3 distinct third-party libraries, isolate them in adapters to make library replacement easier:**
+
+```python
+# BAD: Direct third-party imports scattered throughout main.py
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from prometheus_client import generate_latest
+from httpx import Client
+from strawberry.fastapi import GraphQLRouter
+# ... many more third-party imports
+
+# GOOD: Isolate third-party libraries in adapters
+# src/adapters/http_framework.py
+class HTTPFrameworkAdapter:
+    """Adapter for HTTP framework (FastAPI/Flask/etc)."""
+    def __init__(self):
+        from fastapi import FastAPI
+        self.FastAPI = FastAPI
+        from fastapi import HTTPException
+        self.HTTPException = HTTPException
+    
+    def create_app(self):
+        return self.FastAPI()
+
+# src/adapters/validation.py
+class ValidationAdapter:
+    """Adapter for validation library (Pydantic/marshmallow/etc)."""
+    def __init__(self):
+        from pydantic import BaseModel, Field
+        self.BaseModel = BaseModel
+        self.Field = Field
+
+# src/adapters/metrics.py
+class MetricsAdapter:
+    """Adapter for metrics library (Prometheus/etc)."""
+    def generate_metrics(self):
+        from prometheus_client import generate_latest
+        return generate_latest()
+
+# In main.py or service container:
+from adapters.http_framework import HTTPFrameworkAdapter
+from adapters.validation import ValidationAdapter
+from adapters.metrics import MetricsAdapter
+
+http_adapter = HTTPFrameworkAdapter()
+validation_adapter = ValidationAdapter()
+metrics_adapter = MetricsAdapter()
+
+app = http_adapter.create_app()
+```
+
+**Benefits:**
+- Easy to swap libraries (e.g., FastAPI → Flask, Pydantic → marshmallow)
+- Centralized import logic (handle version differences, optional dependencies)
+- Easier testing (mock the adapter, not the library)
+- Clear dependency boundaries
+
+**When to isolate:**
+- **More than 3 distinct third-party libraries** in a single file
+- Library might be replaced in the future
+- Library has version compatibility issues
+- Library is optional/feature-flagged
+
+#### 2. **Strategy Pattern** - For Alternative Implementations
+When you have multiple ways to do the same thing:
+
+```python
+# src/strategies/backup_strategy.py
+class BackupStrategy:
+    """Strategy interface for backup implementations."""
+    def backup(self, data): raise NotImplementedError
+    def restore(self, backup_id): raise NotImplementedError
+
+class FileBackupStrategy(BackupStrategy):
+    """File-based backup strategy."""
+    ...
+
+class S3BackupStrategy(BackupStrategy):
+    """S3-based backup strategy."""
+    ...
+```
+
+#### 3. **Command Pattern** - For Endpoint Handlers
+Group related endpoints into command modules:
+
+```python
+# src/api/commands/task_commands.py
+class TaskCommands:
+    """Command handlers for task-related endpoints."""
+    
+    @staticmethod
+    async def create_task(task_data, auth):
+        """Create a new task."""
+        ...
+    
+    @staticmethod
+    async def complete_task(task_id, agent_id):
+        """Complete a task."""
+        ...
+```
+
+#### 4. **Dependency Injection** - For Shared Services
+Centralize service initialization:
+
+```python
+# src/dependencies/services.py
+class ServiceContainer:
+    """Container for all application services."""
+    
+    def __init__(self):
+        self.db = TodoDatabase(...)
+        self.backup_manager = BackupManager(...)
+        self.job_queue = JobQueueAdapter().get_queue()
+        # ... other services
+
+# In main.py:
+from dependencies.services import ServiceContainer
+services = ServiceContainer()
+```
+
+### Recommended Module Structure
+
+Break down `main.py` into:
+
+```
+src/
+├── main.py                    # Minimal: app creation, routing, lifespan
+├── api/                       # API route handlers
+│   ├── __init__.py
+│   ├── routes/               # Route modules by domain
+│   │   ├── projects.py       # Project endpoints
+│   │   ├── tasks.py          # Task endpoints
+│   │   ├── comments.py       # Comment endpoints
+│   │   ├── attachments.py    # Attachment endpoints
+│   │   ├── relationships.py  # Relationship endpoints
+│   │   └── mcp.py            # MCP endpoints
+│   └── commands/             # Command handlers (optional)
+│       ├── task_commands.py
+│       └── project_commands.py
+├── models/                    # Pydantic models
+│   ├── __init__.py
+│   ├── project_models.py
+│   ├── task_models.py
+│   └── request_models.py
+├── auth/                      # Authentication/authorization
+│   ├── __init__.py
+│   ├── dependencies.py       # FastAPI dependencies
+│   └── strategies.py         # Auth strategies
+├── middleware/               # Middleware setup
+│   ├── __init__.py
+│   └── setup.py              # Middleware configuration
+├── exceptions/               # Exception handlers
+│   ├── __init__.py
+│   └── handlers.py           # Global exception handlers
+├── dependencies/             # Dependency injection
+│   ├── __init__.py
+│   └── services.py           # Service container
+└── adapters/                 # External service adapters
+    ├── __init__.py
+    ├── job_queue_adapter.py  # Service adapters
+    ├── http_framework.py     # HTTP framework adapter (FastAPI/etc)
+    ├── validation.py        # Validation library adapter (Pydantic/etc)
+    ├── metrics.py            # Metrics library adapter (Prometheus/etc)
+    └── third_party.py        # Other third-party library adapters
+```
+
+### Refactoring Steps
+
+1. **Create module structure** (as above)
+2. **Isolate third-party libraries** (if >3 distinct libraries):
+   - Create adapters in `adapters/` for each major third-party library
+   - Move all imports and library-specific code to adapters
+   - Use adapters throughout application code
+3. **Move Pydantic models** to `models/` (group by domain)
+4. **Extract route handlers** to `api/routes/` (one file per domain)
+5. **Extract authentication** to `auth/dependencies.py`
+6. **Extract exception handlers** to `exceptions/handlers.py`
+7. **Extract middleware setup** to `middleware/setup.py`
+8. **Create service container** in `dependencies/services.py`
+9. **Update main.py** to:
+   - Import routes
+   - Register routes with app
+   - Set up middleware
+   - Configure exception handlers
+   - Initialize services
+
+### Example: Breaking Down main.py
+
+**Before (in main.py):**
+```python
+# 1000+ lines of mixed concerns
+@app.post("/tasks")
+async def create_task(...): ...
+
+class TaskCreate(BaseModel): ...
+
+async def verify_api_key(...): ...
+```
+
+**After:**
+
+```python
+# src/main.py (minimal)
+from fastapi import FastAPI
+from api.routes import tasks, projects, comments
+from middleware.setup import setup_middleware
+from exceptions.handlers import setup_exception_handlers
+from dependencies.services import ServiceContainer
+
+app = FastAPI()
+services = ServiceContainer()
+
+setup_middleware(app)
+setup_exception_handlers(app)
+
+app.include_router(tasks.router)
+app.include_router(projects.router)
+app.include_router(comments.router)
+```
+
+```python
+# src/api/routes/tasks.py
+from fastapi import APIRouter, Depends
+from models.task_models import TaskCreate, TaskResponse
+from auth.dependencies import verify_api_key
+from dependencies.services import get_services
+
+router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+@router.post("/", response_model=TaskResponse)
+async def create_task(
+    task: TaskCreate,
+    auth: dict = Depends(verify_api_key),
+    services = Depends(get_services)
+):
+    """Create a new task."""
+    return services.db.create_task(...)
+```
+
+### Best Practices
+
+1. **One domain per file**: Tasks in `tasks.py`, Projects in `projects.py`
+2. **Isolate third-party libraries**: When you have >3 distinct external libraries, create adapters to isolate library-specific code
+3. **Shared utilities**: Put in `utils/` or `common/`
+4. **Service dependencies**: Inject via FastAPI `Depends()` or service container
+5. **Keep main.py minimal**: Should only orchestrate, not implement
+6. **Test modules independently**: Each module should have its own tests
+7. **Preserve existing APIs**: Refactoring shouldn't change external behavior
+8. **Library abstraction**: Use adapters to abstract library-specific APIs, making replacements easier in the future
+
+### Creating Tasks for Refactoring
+
+When you encounter a large hub file:
+1. **Create a task** to break it down:
+   - Title: "Refactor main.py into modular structure"
+   - Include target structure in instructions
+   - List specific modules to extract
+2. **Break into subtasks**:
+   - Extract models to `models/`
+   - Extract routes to `api/routes/`
+   - Extract auth to `auth/`
+   - etc.
+3. **Test after each extraction**: Ensure tests still pass
+4. **Commit incrementally**: Don't wait until everything is done
+
 ## Common Tasks
 
 ### Adding a New Endpoint
 1. Write test in `tests/test_api.py` (it will fail)
-2. Implement endpoint in `src/main.py`
+2. Implement endpoint in appropriate `src/api/routes/` module (or `src/main.py` if refactoring not done yet)
 3. Run tests to verify it works
 4. Update API documentation if needed
 

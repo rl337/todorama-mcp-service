@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TODO Task Management</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>TODO Task Management</h1>
+            <div class="header-actions">
+                <button id="refreshBtn" class="btn btn-secondary">Refresh</button>
+                <button id="createTaskBtn" class="btn btn-primary">Create Task</button>
+            </div>
+        </header>
+
+        <!-- Filters Section -->
+        <section class="filters">
+            <h2>Filters & Search</h2>
+            <div class="filter-grid">
+                <div class="filter-group">
+                    <label for="searchInput">Search:</label>
+                    <input type="text" id="searchInput" placeholder="Search by title or ID...">
+                </div>
+                <div class="filter-group">
+                    <label for="statusFilter">Status:</label>
+                    <select id="statusFilter" multiple>
+                        <option value="available">Available</option>
+                        <option value="in_progress">In Progress</option>
+                        <option value="complete">Complete</option>
+                        <option value="blocked">Blocked</option>
+                        <option value="cancelled">Cancelled</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="typeFilter">Type:</label>
+                    <select id="typeFilter" multiple>
+                        <option value="concrete">Concrete</option>
+                        <option value="abstract">Abstract</option>
+                        <option value="epic">Epic</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="priorityFilter">Priority:</label>
+                    <select id="priorityFilter" multiple>
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="agentFilter">Assigned Agent:</label>
+                    <input type="text" id="agentFilter" placeholder="Agent ID...">
+                </div>
+                <div class="filter-group">
+                    <label for="projectFilter">Project ID:</label>
+                    <input type="number" id="projectFilter" placeholder="Project ID...">
+                </div>
+                <div class="filter-group">
+                    <label for="createdDateFrom">Created From:</label>
+                    <input type="date" id="createdDateFrom">
+                </div>
+                <div class="filter-group">
+                    <label for="createdDateTo">Created To:</label>
+                    <input type="date" id="createdDateTo">
+                </div>
+            </div>
+            <div class="filter-actions">
+                <button id="applyFiltersBtn" class="btn btn-primary">Apply Filters</button>
+                <button id="clearFiltersBtn" class="btn btn-secondary">Clear Filters</button>
+                <button id="exportBtn" class="btn btn-secondary">Export (JSON)</button>
+                <button id="exportCsvBtn" class="btn btn-secondary">Export (CSV)</button>
+            </div>
+        </section>
+
+        <!-- Loading Indicator -->
+        <div id="loadingIndicator" class="loading" style="display: none;">
+            <div class="spinner"></div>
+            <span>Loading tasks...</span>
+        </div>
+
+        <!-- Error Message -->
+        <div id="errorMessage" class="error" style="display: none;"></div>
+
+        <!-- Task Table -->
+        <section class="tasks-section">
+            <div class="table-header">
+                <h2>Tasks</h2>
+                <div class="pagination-info">
+                    <span id="taskCount">0 tasks</span>
+                    <div class="pagination">
+                        <button id="prevPage" class="btn btn-small" disabled>Previous</button>
+                        <span id="pageInfo">Page 1</span>
+                        <button id="nextPage" class="btn btn-small" disabled>Next</button>
+                    </div>
+                </div>
+            </div>
+            <div class="table-container">
+                <table id="tasksTable">
+                    <thead>
+                        <tr>
+                            <th data-sort="id">ID</th>
+                            <th data-sort="title">Title</th>
+                            <th data-sort="task_type">Type</th>
+                            <th data-sort="task_status">Status</th>
+                            <th data-sort="priority">Priority</th>
+                            <th data-sort="assigned_agent">Assigned Agent</th>
+                            <th data-sort="created_at">Created Date</th>
+                            <th data-sort="updated_at">Updated Date</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tasksTableBody">
+                        <!-- Tasks will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <!-- Create Task Modal -->
+    <div id="createTaskModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Create New Task</h2>
+                <button class="modal-close" onclick="closeCreateModal()">&times;</button>
+            </div>
+            <form id="createTaskForm">
+                <div class="form-group">
+                    <label for="taskTitle">Title *</label>
+                    <input type="text" id="taskTitle" required>
+                </div>
+                <div class="form-group">
+                    <label for="taskType">Type *</label>
+                    <select id="taskType" required>
+                        <option value="concrete">Concrete</option>
+                        <option value="abstract">Abstract</option>
+                        <option value="epic">Epic</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="taskInstruction">Instruction *</label>
+                    <textarea id="taskInstruction" rows="4" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="taskVerification">Verification Instruction *</label>
+                    <textarea id="taskVerification" rows="4" required></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="taskPriority">Priority</label>
+                    <select id="taskPriority">
+                        <option value="medium">Medium</option>
+                        <option value="low">Low</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="taskProjectId">Project ID</label>
+                    <input type="number" id="taskProjectId">
+                </div>
+                <div class="form-group">
+                    <label for="taskNotes">Notes</label>
+                    <textarea id="taskNotes" rows="3"></textarea>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Create Task</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeCreateModal()">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Task Details Modal -->
+    <div id="taskDetailsModal" class="modal" style="display: none;">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2>Task Details</h2>
+                <button class="modal-close" onclick="closeTaskDetailsModal()">&times;</button>
+            </div>
+            <div id="taskDetailsContent">
+                <!-- Task details will be populated here -->
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

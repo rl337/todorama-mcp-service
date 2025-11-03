@@ -1307,10 +1307,14 @@ class TodoDatabase:
                 conditions.append("t.task_type = ?")
                 params.append(task_type)
             # Handle task_status filter - if 'blocked', we'll add it after finding parents with blocked subtasks
+            # Handle 'needs_verification' as a special status that represents complete+unverified
             filter_task_status = task_status
             if task_status == "blocked":
                 # Don't add task_status filter yet - we'll modify it to include parents with blocked subtasks
                 pass
+            elif task_status == "needs_verification":
+                # needs_verification is a computed state: complete + unverified
+                conditions.append("t.task_status = 'complete' AND t.verification_status = 'unverified'")
             elif task_status:
                 conditions.append("t.task_status = ?")
                 params.append(task_status)
@@ -1634,7 +1638,7 @@ class TodoDatabase:
             current = cursor.fetchone()
             old_status = current["task_status"] if current else None
             
-            # Only lock if task is available
+            # Only lock if task is available OR in needs_verification state (complete but unverified)
             # Set started_at only if it's NULL (first time locking)
             cursor.execute("""
                 UPDATE tasks 
@@ -1642,7 +1646,10 @@ class TodoDatabase:
                     assigned_agent = ?,
                     updated_at = CURRENT_TIMESTAMP,
                     started_at = COALESCE(started_at, CURRENT_TIMESTAMP)
-                WHERE id = ? AND task_status = 'available'
+                WHERE id = ? AND (
+                    task_status = 'available'
+                    OR (task_status = 'complete' AND verification_status = 'unverified')
+                )
             """, (agent_id, task_id))
             success = cursor.rowcount > 0
             
@@ -1921,7 +1928,7 @@ class TodoDatabase:
         finally:
             self.adapter.close(conn)
     
-    def verify_task(self, task_id: int, agent_id: str) -> bool:
+    def verify_task(self, task_id: int, agent_id: str, notes: Optional[str] = None) -> bool:
         """Mark a task as verified (verification check passed)."""
         if not agent_id:
             raise ValueError("agent_id is required for verifying tasks")
@@ -1934,12 +1941,25 @@ class TodoDatabase:
             current = cursor.fetchone()
             old_status = current["verification_status"] if current else None
             
-            cursor.execute("""
-                UPDATE tasks 
-                SET verification_status = 'verified',
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (task_id,))
+            # Update verification status and optionally append notes
+            if notes:
+                cursor.execute("""
+                    UPDATE tasks 
+                    SET verification_status = 'verified',
+                        notes = CASE 
+                            WHEN notes IS NULL OR notes = '' THEN ?
+                            ELSE notes || '\n\n' || ?
+                        END,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (notes, notes, task_id))
+            else:
+                cursor.execute("""
+                    UPDATE tasks 
+                    SET verification_status = 'verified',
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (task_id,))
             
             # Record in history
             cursor.execute("""
@@ -3130,16 +3150,25 @@ class TodoDatabase:
                     LIMIT ?
                 """, params + [limit])
             elif agent_type == "implementation":
-                # Concrete tasks that are available and have no blocking tasks
+                # Concrete tasks that are available OR tasks in needs_verification state (complete but unverified)
+                # needs_verification state = task_status='complete' AND verification_status='unverified'
                 cursor.execute(f"""
                     SELECT t.* FROM tasks t
                     LEFT JOIN task_relationships tr ON t.id = tr.child_task_id 
                         AND tr.relationship_type = 'blocked_by'
-                    WHERE t.task_status = 'available'
-                        AND t.task_type = 'concrete'
+                    WHERE (
+                        (t.task_status = 'available' AND t.task_type = 'concrete')
+                        OR
+                        (t.task_status = 'complete' AND t.verification_status = 'unverified')
+                    )
                         AND tr.id IS NULL
                         {project_filter}
-                    ORDER BY t.created_at ASC
+                    ORDER BY 
+                        CASE 
+                            WHEN t.task_status = 'complete' AND t.verification_status = 'unverified' THEN 0
+                            ELSE 1
+                        END,
+                        t.created_at ASC
                     LIMIT ?
                 """, params + [limit])
             else:

@@ -329,7 +329,7 @@ def test_mcp_post_tools_list(client):
     assert "result" in result
     assert "tools" in result["result"]
     
-    # Verify all tools are present (should include search_tasks)
+    # Verify all tools are present (should include search_tasks and verify_task)
     tools = result["result"]["tools"]
     tool_names = [tool["name"] for tool in tools]
     assert "list_available_tasks" in tool_names
@@ -342,7 +342,8 @@ def test_mcp_post_tools_list(client):
     assert "add_task_update" in tool_names
     assert "get_task_context" in tool_names
     assert "search_tasks" in tool_names
-    assert len(tools) >= 10  # At least 10 tools (search_tasks added)
+    assert "verify_task" in tool_names, "verify_task should be exposed as MCP tool"
+    assert len(tools) >= 11  # At least 11 tools (verify_task added)
     
     # Verify tool structure
     for tool in tools:
@@ -492,11 +493,72 @@ def test_mcp_post_tools_call_complete_task(client):
     assert task["completed_at"] is not None
 
 
+def test_mcp_post_tools_call_verify_task(client):
+    """Test MCP tools/call for verify_task - CRITICAL for task verification."""
+    # Create, reserve, and complete task
+    create_response = client.post("/tasks", json={
+        "title": "Verify MCP Test",
+        "task_type": "concrete",
+        "task_instruction": "Test",
+        "verification_instruction": "Verify",
+        "agent_id": "test-agent"
+    })
+    task_id = create_response.json()["id"]
+    
+    client.post("/mcp/reserve_task", json={
+        "task_id": task_id,
+        "agent_id": "mcp-test-agent"
+    })
+    
+    client.post("/mcp/complete_task", json={
+        "task_id": task_id,
+        "agent_id": "mcp-test-agent",
+        "notes": "Completed via MCP"
+    })
+    
+    # Verify task status is complete but unverified
+    get_response = client.get(f"/tasks/{task_id}")
+    task = get_response.json()
+    assert task["task_status"] == "complete"
+    assert task["verification_status"] == "unverified"
+    
+    # Verify via MCP protocol
+    response = client.post("/mcp/sse", json={
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": {
+            "name": "verify_task",
+            "arguments": {
+                "task_id": task_id,
+                "agent_id": "mcp-test-agent"
+            }
+        }
+    })
+    assert response.status_code == 200
+    result = response.json()
+    
+    assert result["jsonrpc"] == "2.0"
+    assert result["id"] == 6
+    
+    # Parse and verify
+    import json
+    content_text = result["result"]["content"][0]["text"]
+    verify_result = json.loads(content_text)
+    assert verify_result["success"] is True
+    assert verify_result["task_id"] == task_id
+    
+    # Verify task is actually verified in database
+    get_response = client.get(f"/tasks/{task_id}")
+    task = get_response.json()
+    assert task["verification_status"] == "verified"
+
+
 def test_mcp_post_tools_call_create_task(client):
     """Test MCP tools/call for create_task - CRITICAL for task creation."""
     response = client.post("/mcp/sse", json={
         "jsonrpc": "2.0",
-        "id": 6,
+        "id": 7,
         "method": "tools/call",
         "params": {
             "name": "create_task",

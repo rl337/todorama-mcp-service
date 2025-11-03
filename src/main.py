@@ -16,15 +16,20 @@ from contextlib import asynccontextmanager
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
+# Third-party imports
 from fastapi import FastAPI, HTTPException, Query, Body, Path, Request, UploadFile, File, Form, Depends
 import httpx
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse, Response
+from fastapi.responses import JSONResponse, StreamingResponse, Response, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST
 from pydantic import BaseModel, Field, field_validator, model_validator
 import json
 import asyncio
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from strawberry.fastapi import GraphQLRouter
 
+# Internal service imports
 from database import TodoDatabase, TaskType, TaskStatus, VerificationStatus, RelationshipType
 from mcp_api import MCPTodoAPI, MCP_FUNCTIONS, set_db
 from backup import BackupManager, BackupScheduler
@@ -42,9 +47,20 @@ from file_storage import (
 )
 from conversation_storage import ConversationStorage
 from conversation_backup import ConversationBackupManager, BackupScheduler as ConversationBackupScheduler
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from strawberry.fastapi import GraphQLRouter
 from graphql_schema import schema
+
+# Import extracted modules
+from models import (
+    ProjectCreate, ProjectResponse,
+    TaskCreate, TaskUpdate, TaskResponse,
+    LockTaskRequest, CompleteTaskRequest, BulkCompleteRequest,
+    BulkAssignRequest, BulkUpdateStatusRequest, BulkDeleteRequest,
+    RelationshipCreate,
+    CommentCreate, CommentUpdate, CommentResponse
+)
+from auth.dependencies import verify_api_key, verify_admin_api_key, verify_session_token, verify_user_auth, optional_api_key
+from exceptions.handlers import setup_exception_handlers
+from middleware.setup import setup_middleware
 
 # Try to import cost tracking
 try:
@@ -167,10 +183,11 @@ if JOB_QUEUE_AVAILABLE:
         logger.warning(f"Failed to initialize job queue: {e}. Job queue features will be unavailable.")
         job_queue = None
 
-# Initialize NATS queue (if available)
+# Initialize NATS queue (if available and explicitly enabled)
+# NATS is optional - service works fine without it
 nats_queue = None
 nats_workers = []
-if NATS_AVAILABLE:
+if NATS_AVAILABLE and os.getenv("NATS_ENABLED", "false").lower() == "true":
     try:
         nats_url = os.getenv("NATS_URL", "nats://localhost:4222")
         use_jetstream = os.getenv("NATS_USE_JETSTREAM", "false").lower() == "true"
@@ -181,7 +198,10 @@ if NATS_AVAILABLE:
         logger.warning(f"Failed to initialize NATS queue: {e}. NATS features will be unavailable.")
         nats_queue = None
 else:
-    logger.info("NATS queue unavailable (nats-py not installed)")
+    if not NATS_AVAILABLE:
+        logger.info("NATS queue unavailable (nats-py not installed)")
+    else:
+        logger.info("NATS disabled (set NATS_ENABLED=true to enable)")
 
 backup_s3_bucket = os.getenv("BACKUP_S3_BUCKET")
 if backup_s3_bucket:
@@ -247,21 +267,29 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Failed to initialize tracing, continuing without it", exc_info=True)
     
-    # Start NATS workers if available
+    # Start NATS workers if available (non-blocking - don't wait if it fails)
     global nats_workers
+    nats_workers = []
     if NATS_AVAILABLE and nats_queue:
-        try:
-            num_workers = int(os.getenv("NATS_NUM_WORKERS", "1"))
-            nats_workers = await start_workers(
-                db=db,
-                nats_url=nats_queue.nats_url,
-                num_workers=num_workers,
-                use_jetstream=nats_queue.use_jetstream
-            )
-            logger.info(f"Started {len(nats_workers)} NATS workers")
-        except Exception as e:
-            logger.warning(f"Failed to start NATS workers: {e}", exc_info=True)
-            nats_workers = []
+        # Start NATS workers in background - don't block HTTP server startup
+        async def start_nats_workers_background():
+            try:
+                num_workers = int(os.getenv("NATS_NUM_WORKERS", "1"))
+                workers = await start_workers(
+                    db=db,
+                    nats_url=nats_queue.nats_url,
+                    num_workers=num_workers,
+                    use_jetstream=nats_queue.use_jetstream
+                )
+                nats_workers.extend(workers)
+                logger.info(f"Started {len(workers)} NATS workers")
+            except Exception as e:
+                logger.warning(f"Failed to start NATS workers (service will continue without NATS): {e}")
+                nats_workers = []
+        
+        # Don't await - let it run in background, HTTP server should start immediately
+        asyncio.create_task(start_nats_workers_background())
+        logger.info("NATS workers will start in background (if available)")
     
     yield
     # Shutdown
@@ -289,237 +317,46 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add monitoring middleware (must be added before routes)
-app.add_middleware(MetricsMiddleware)
+# Setup middleware (includes MetricsMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware)
+setup_middleware(app)
 
-# Add rate limiting middleware (after metrics, before routes)
-app.add_middleware(RateLimitMiddleware)
-
-# Add security headers middleware (adds security headers to all responses)
-app.add_middleware(SecurityHeadersMiddleware)
+# Setup exception handlers
+setup_exception_handlers(app)
 
 # Add GraphQL router
 graphql_app = GraphQLRouter(schema)
 app.include_router(graphql_app, prefix="/graphql")
 
+# Mount static files directory for web interface
+static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+# Root endpoint - serve web interface
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Serve the web-based task management interface."""
+    static_dir_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
+    index_file = os.path.join(static_dir_path, "index.html")
+    
+    if os.path.exists(index_file):
+        with open(index_file, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read())
+    else:
+        return HTMLResponse(
+            content="<h1>TODO Service</h1><p>Web interface not found. Please ensure static files are deployed.</p>",
+            status_code=404
+        )
+
 # Authentication security scheme
 security = HTTPBearer(auto_error=False)
 
+# Authentication dependencies are now imported from auth.dependencies above
+# Old definitions removed - see auth/dependencies.py
 
-# Authentication dependency
-async def verify_api_key(
-    request: Request,
-    authorization: Optional[HTTPAuthorizationCredentials] = None
-) -> Dict[str, Any]:
-    """
-    Verify API key from request headers.
-    Supports both X-API-Key header and Authorization: Bearer token.
-    
-    Returns:
-        Dictionary with 'key_id' and 'project_id' if authenticated
-    Raises:
-        HTTPException 401 if authentication fails
-    """
-    api_key = None
-    
-    # Try X-API-Key header first
-    api_key_header = request.headers.get("X-API-Key")
-    if api_key_header:
-        api_key = api_key_header
-    
-    # Try Authorization: Bearer token
-    if not api_key and authorization:
-        api_key = authorization.credentials
-    
-    if not api_key:
-        raise HTTPException(
-            status_code=401,
-            detail="API key required. Provide X-API-Key header or Authorization: Bearer token."
-        )
-    
-    # Hash the key and look it up
-    key_hash = db._hash_api_key(api_key)
-    key_info = db.get_api_key_by_hash(key_hash)
-    
-    if not key_info:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid API key"
-        )
-    
-    if key_info["enabled"] != 1:
-        raise HTTPException(
-            status_code=401,
-            detail="API key has been revoked"
-        )
-    
-    # Update last used timestamp
-    db.update_api_key_last_used(key_info["id"])
-    
-    # Store in request state for use in endpoints
-    request.state.project_id = key_info["project_id"]
-    request.state.key_id = key_info["id"]
-    
-    # Get admin status
-    is_admin = db.is_api_key_admin(key_info["id"])
-    request.state.is_admin = is_admin
-    
-    return {
-        "key_id": key_info["id"],
-        "project_id": key_info["project_id"],
-        "is_admin": is_admin
-    }
-
-
-# Admin authentication dependency
-async def verify_admin_api_key(
-    request: Request,
-    auth: Dict[str, Any] = Depends(verify_api_key)
-) -> Dict[str, Any]:
-    """
-    Verify that the API key has admin privileges.
-    
-    Returns:
-        Same as verify_api_key if admin, else raises 403
-    Raises:
-        HTTPException 403 if not admin
-    """
-    if not auth.get("is_admin", False):
-        raise HTTPException(
-            status_code=403,
-            detail="Admin privileges required"
-        )
-    return auth
-
-
-async def verify_session_token(
-    request: Request,
-    authorization: Optional[HTTPAuthorizationCredentials] = None
-) -> Dict[str, Any]:
-    """
-    Verify session token from Authorization: Bearer token.
-    
-    Returns:
-        Dictionary with 'user_id', 'session_id', and 'session_token' if authenticated
-    Raises:
-        HTTPException 401 if authentication fails
-    """
-    token = None
-    
-    # Get token from Authorization header
-    if authorization:
-        token = authorization.credentials
-    else:
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-    
-    if not token:
-        raise HTTPException(
-            status_code=401,
-            detail="Session token required. Provide Authorization: Bearer token."
-        )
-    
-    # Look up session
-    session = db.get_session_by_token(token)
-    
-    if not session:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired session token"
-        )
-    
-    # Store in request state
-    request.state.user_id = session["user_id"]
-    request.state.session_id = session["id"]
-    request.state.session_token = token
-    
-    return {
-        "user_id": session["user_id"],
-        "session_id": session["id"],
-        "session_token": token
-    }
-
-
-async def verify_user_auth(
-    request: Request,
-    authorization: Optional[HTTPAuthorizationCredentials] = None
-) -> Dict[str, Any]:
-    """
-    Verify either API key or session token authentication.
-    Tries session token first, then API key.
-    
-    Returns:
-        Dictionary with authentication info
-    """
-    # Try session token first
-    token = None
-    if authorization:
-        token = authorization.credentials
-    else:
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-    
-    if token:
-        # Try as session token first
-        session = db.get_session_by_token(token)
-        if session:
-            request.state.user_id = session["user_id"]
-            request.state.session_id = session["id"]
-            return {
-                "user_id": session["user_id"],
-                "session_id": session["id"],
-                "auth_type": "session"
-            }
-    
-    # Try API key if no session token found
-    api_key = None
-    api_key_header = request.headers.get("X-API-Key")
-    if api_key_header:
-        api_key = api_key_header
-    
-    if api_key:
-        # Hash the key and look it up
-        key_hash = db._hash_api_key(api_key)
-        key_info = db.get_api_key_by_hash(key_hash)
-        
-        if key_info and key_info["enabled"] == 1:
-            db.update_api_key_last_used(key_info["id"])
-            request.state.project_id = key_info["project_id"]
-            request.state.key_id = key_info["id"]
-            return {
-                "key_id": key_info["id"],
-                "project_id": key_info["project_id"],
-                "auth_type": "api_key"
-            }
-    
-    raise HTTPException(
-        status_code=401,
-        detail="Authentication required. Provide X-API-Key header or Authorization: Bearer token."
-    )
-
-
-# Optional authentication (doesn't raise error if missing)
-async def optional_api_key(
-    request: Request,
-    authorization: Optional[HTTPAuthorizationCredentials] = None
-) -> Optional[Dict[str, Any]]:
-    """
-    Optional API key verification.
-    Returns None if no key provided, otherwise verifies the key.
-    """
-    try:
-        return await verify_api_key(request, authorization)
-    except HTTPException:
-        # Check if it's a 401 (missing key is OK for optional auth)
-        api_key_header = request.headers.get("X-API-Key")
-        if not api_key_header and not authorization:
-            return None
-        raise  # Re-raise if key was provided but invalid
-
-
-# Global exception handler for consistent error responses
+# Exception handlers are now set up via setup_exception_handlers() above
+# Keeping old handlers for now during migration - they will be removed
+# once setup_exception_handlers() is confirmed working
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """Handle all unhandled exceptions with consistent error format."""
@@ -640,202 +477,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return response
 
 
-# Pydantic models for request/response
-class ProjectCreate(BaseModel):
-    name: str = Field(..., description="Project name (unique)", min_length=1)
-    local_path: str = Field(..., description="Local path where project is located", min_length=1)
-    origin_url: Optional[str] = Field(None, description="Origin URL (GitHub, file://, etc.)")
-    description: Optional[str] = Field(None, description="Project description")
-    
-    @field_validator('name', 'local_path')
-    @classmethod
-    def validate_not_empty_or_whitespace(cls, v: str) -> str:
-        """Validate that string fields are not empty or only whitespace."""
-        if not v or not v.strip():
-            raise ValueError("Field cannot be empty or contain only whitespace")
-        return v.strip()
-
-
-class TaskCreate(BaseModel):
-    title: str = Field(..., description="Task title", min_length=1)
-    task_type: str = Field(..., description="Task type: concrete, abstract, or epic")
-    task_instruction: str = Field(..., description="What to do", min_length=1)
-    verification_instruction: str = Field(..., description="How to verify completion (idempotent)", min_length=1)
-    agent_id: str = Field(..., description="Agent ID creating this task", min_length=1)
-    project_id: Optional[int] = Field(None, description="Project ID (optional)", gt=0)
-    notes: Optional[str] = Field(None, description="Optional notes")
-    priority: Optional[str] = Field("medium", description="Task priority: low, medium, high, or critical")
-    estimated_hours: Optional[float] = Field(None, description="Optional estimated hours for the task", gt=0)
-    due_date: Optional[str] = Field(None, description="Optional due date (ISO format timestamp)")
-    
-    @field_validator('title', 'task_instruction', 'verification_instruction', 'agent_id')
-    @classmethod
-    def validate_not_empty_or_whitespace(cls, v: str) -> str:
-        """Validate that string fields are not empty or only whitespace."""
-        if not v or not v.strip():
-            raise ValueError("Field cannot be empty or contain only whitespace")
-        return v.strip()
-    
-    @field_validator('task_type')
-    @classmethod
-    def validate_task_type(cls, v: str) -> str:
-        """Validate task_type enum."""
-        valid_types = ["concrete", "abstract", "epic"]
-        if v not in valid_types:
-            raise ValueError(f"Invalid task_type '{v}'. Must be one of: {', '.join(valid_types)}")
-        return v
-    
-    @field_validator('priority')
-    @classmethod
-    def validate_priority(cls, v: Optional[str]) -> Optional[str]:
-        """Validate priority enum."""
-        if v is None:
-            return "medium"
-        valid_priorities = ["low", "medium", "high", "critical"]
-        if v not in valid_priorities:
-            raise ValueError(f"Invalid priority '{v}'. Must be one of: {', '.join(valid_priorities)}")
-        return v
-    
-    @field_validator('project_id')
-    @classmethod
-    def validate_project_id(cls, v: Optional[int]) -> Optional[int]:
-        """Validate project_id is positive if provided."""
-        if v is not None and v <= 0:
-            raise ValueError("project_id must be a positive integer")
-        return v
-    
-    @field_validator('estimated_hours')
-    @classmethod
-    def validate_estimated_hours(cls, v: Optional[float]) -> Optional[float]:
-        """Validate estimated_hours is positive if provided."""
-        if v is not None and v <= 0:
-            raise ValueError("estimated_hours must be a positive number")
-        return v
-
-
-class TaskUpdate(BaseModel):
-    task_status: Optional[str] = None
-    verification_status: Optional[str] = None
-    notes: Optional[str] = None
-    
-    @field_validator('task_status')
-    @classmethod
-    def validate_task_status(cls, v: Optional[str]) -> Optional[str]:
-        """Validate task_status enum."""
-        if v is None:
-            return v
-        valid_statuses = ["available", "in_progress", "complete", "blocked", "cancelled"]
-        if v not in valid_statuses:
-            raise ValueError(f"Invalid task_status '{v}'. Must be one of: {', '.join(valid_statuses)}")
-        return v
-    
-    @field_validator('verification_status')
-    @classmethod
-    def validate_verification_status(cls, v: Optional[str]) -> Optional[str]:
-        """Validate verification_status enum."""
-        if v is None:
-            return v
-        valid_statuses = ["unverified", "verified"]
-        if v not in valid_statuses:
-            raise ValueError(f"Invalid verification_status '{v}'. Must be one of: {', '.join(valid_statuses)}")
-        return v
-
-
-class RelationshipCreate(BaseModel):
-    parent_task_id: int = Field(..., description="Parent task ID", gt=0)
-    child_task_id: int = Field(..., description="Child task ID", gt=0)
-    relationship_type: str = Field(..., description="Relationship type: subtask, blocking, blocked_by, followup, related")
-    
-    @field_validator('relationship_type')
-    @classmethod
-    def validate_relationship_type(cls, v: str) -> str:
-        """Validate relationship_type enum."""
-        valid_types = ["subtask", "blocking", "blocked_by", "followup", "related"]
-        if v not in valid_types:
-            raise ValueError(f"Invalid relationship_type '{v}'. Must be one of: {', '.join(valid_types)}")
-        return v
-    
-    @model_validator(mode='after')
-    def validate_different_tasks(self):
-        """Validate parent and child are different tasks."""
-        if self.parent_task_id == self.child_task_id:
-            raise ValueError("parent_task_id and child_task_id cannot be the same")
-        return self
-
-
-class ProjectResponse(BaseModel):
-    """Project response model."""
-    id: int
-    name: str
-    local_path: str
-    origin_url: Optional[str]
-    description: Optional[str]
-    created_at: str
-    updated_at: str
-
-
-class TaskResponse(BaseModel):
-    """Task response model."""
-    id: int
-    project_id: Optional[int]
-    title: str
-    task_type: str
-    task_instruction: str
-    verification_instruction: str
-    task_status: str
-    verification_status: str
-    priority: str
-    assigned_agent: Optional[str]
-    created_at: str
-    updated_at: str
-    completed_at: Optional[str]
-    notes: Optional[str]
-    due_date: Optional[str]
-    estimated_hours: Optional[float]
-    actual_hours: Optional[float]
-    time_delta_hours: Optional[float]
-    started_at: Optional[str]
-
-
-class CommentCreate(BaseModel):
-    """Comment creation model."""
-    agent_id: str = Field(..., description="Agent ID creating the comment", min_length=1)
-    content: str = Field(..., description="Comment content", min_length=1)
-    parent_comment_id: Optional[int] = Field(None, description="Parent comment ID for threaded replies", gt=0)
-    mentions: Optional[List[str]] = Field(None, description="List of agent IDs mentioned in the comment")
-    
-    @field_validator('agent_id', 'content')
-    @classmethod
-    def validate_not_empty_or_whitespace(cls, v: str) -> str:
-        """Validate that string fields are not empty or only whitespace."""
-        if not v or not v.strip():
-            raise ValueError("Field cannot be empty or contain only whitespace")
-        return v.strip()
-
-
-class CommentUpdate(BaseModel):
-    """Comment update model."""
-    content: str = Field(..., description="Updated comment content", min_length=1)
-    
-    @field_validator('content')
-    @classmethod
-    def validate_not_empty_or_whitespace(cls, v: str) -> str:
-        """Validate that string fields are not empty or only whitespace."""
-        if not v or not v.strip():
-            raise ValueError("Field cannot be empty or contain only whitespace")
-        return v.strip()
-
-
-class CommentResponse(BaseModel):
-    """Comment response model."""
-    id: int
-    task_id: int
-    agent_id: str
-    content: str
-    parent_comment_id: Optional[int]
-    mentions: List[str]
-    created_at: str
-    updated_at: Optional[str]
+# Pydantic models are now imported from models module above
 
 
 @app.get("/health")
@@ -1142,19 +784,6 @@ async def query_tasks(
         search=search
     )
     return [TaskResponse(**task) for task in tasks]
-
-
-class LockTaskRequest(BaseModel):
-    """Request model for locking a task."""
-    agent_id: str = Field(..., description="Agent ID", min_length=1)
-    
-    @field_validator('agent_id')
-    @classmethod
-    def validate_agent_id(cls, v: str) -> str:
-        """Validate agent_id is not empty."""
-        if not v or not v.strip():
-            raise ValueError("agent_id cannot be empty or contain only whitespace")
-        return v.strip()
 
 
 @app.post("/tasks/{task_id}/lock")
@@ -3177,6 +2806,12 @@ async def mcp_sse_post(request: Request):
                     followup_verification=tool_args.get("followup_verification")
                 )
                 return {"jsonrpc": "2.0", "id": body.get("id"), "result": {"content": [{"type": "text", "text": json.dumps(result)}]}}
+            elif tool_name == "verify_task":
+                result = MCPTodoAPI.verify_task(
+                    tool_args.get("task_id"),
+                    tool_args.get("agent_id")
+                )
+                return {"jsonrpc": "2.0", "id": body.get("id"), "result": {"content": [{"type": "text", "text": json.dumps(result)}]}}
             elif tool_name == "create_task":
                 result = MCPTodoAPI.create_task(
                     tool_args.get("title"),
@@ -3647,6 +3282,16 @@ async def mcp_unlock_task(
 ):
     """MCP: Unlock (release) a reserved task."""
     result = MCPTodoAPI.unlock_task(task_id, agent_id)
+    return result
+
+
+@app.post("/mcp/verify_task")
+async def mcp_verify_task(
+    task_id: int = Body(..., embed=True),
+    agent_id: str = Body(..., embed=True)
+):
+    """MCP: Mark a task as verified (verification check passed)."""
+    result = MCPTodoAPI.verify_task(task_id, agent_id)
     return result
 
 

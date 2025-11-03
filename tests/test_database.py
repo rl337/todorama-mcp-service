@@ -249,7 +249,9 @@ def test_create_relationship(temp_db):
         agent_id="test-agent"
     )
     
-    db.create_relationship(blocking_id, parent_id, "blocked_by", "test-agent")
+    # parent_id is blocked by blocking_id
+    # create_relationship(parent_task_id, child_task_id, "blocked_by") means parent_task_id is blocked by child_task_id
+    db.create_relationship(parent_id, blocking_id, "blocked_by", "test-agent")
     
     parent_task = db.get_task(parent_id)
     assert parent_task["task_status"] == "blocked"
@@ -279,7 +281,7 @@ def test_prevent_circular_blocked_by_dependency(temp_db):
     db.create_relationship(task_a_id, task_b_id, "blocked_by", "test-agent")
     
     # Try to create Task B blocked by Task A (should fail - circular dependency)
-    with pytest.raises(ValueError, match="circular dependency"):
+    with pytest.raises(ValueError, match="(?i)circular dependency"):
         db.create_relationship(task_b_id, task_a_id, "blocked_by", "test-agent")
 
 
@@ -315,7 +317,7 @@ def test_prevent_circular_blocked_by_dependency_indirect(temp_db):
     db.create_relationship(task_b_id, task_c_id, "blocked_by", "test-agent")
     
     # Try to create C blocked_by A (should fail - creates cycle A->B->C->A)
-    with pytest.raises(ValueError, match="circular dependency"):
+    with pytest.raises(ValueError, match="(?i)circular dependency"):
         db.create_relationship(task_c_id, task_a_id, "blocked_by", "test-agent")
 
 
@@ -343,7 +345,7 @@ def test_prevent_circular_blocking_dependency(temp_db):
     db.create_relationship(task_a_id, task_b_id, "blocking", "test-agent")
     
     # Try to create Task B blocks Task A (should fail - circular dependency)
-    with pytest.raises(ValueError, match="circular dependency"):
+    with pytest.raises(ValueError, match="(?i)circular dependency"):
         db.create_relationship(task_b_id, task_a_id, "blocking", "test-agent")
 
 
