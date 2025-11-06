@@ -27,15 +27,39 @@ def temp_db():
     db = TodoDatabase(db_path)
     backup_manager = BackupManager(db_path, backups_dir)
     
-    # Override the database and backup manager in the app
+    # Create conversation storage with test database path
+    # Use SQLite for testing (conversation_storage will use db_adapter)
+    conv_db_path = os.path.join(temp_dir, "test_conv.db")
+    os.environ['DB_TYPE'] = 'sqlite'
+    from conversation_storage import ConversationStorage
+    conversation_storage = ConversationStorage(conv_db_path)
+    
+    # Override the database, backup manager, and conversation storage in the app
     import main
     import mcp_api
     main.db = db
     main.backup_manager = backup_manager
+    main.conversation_storage = conversation_storage
     mcp_api.set_db(db)
+    
+    # Also override the service container so get_db() returns the test database
+    from dependencies.services import _service_instance, ServiceContainer
+    # Create a mock service container with our test database
+    class MockServiceContainer:
+        def __init__(self, db, backup_manager, conversation_storage):
+            self.db = db
+            self.backup_manager = backup_manager
+            self.conversation_storage = conversation_storage
+    
+    # Override the global service instance
+    import dependencies.services as services_module
+    original_instance = services_module._service_instance
+    services_module._service_instance = MockServiceContainer(db, backup_manager, conversation_storage)
     
     yield db, db_path, backups_dir
     
+    # Restore original service instance
+    services_module._service_instance = original_instance
     shutil.rmtree(temp_dir)
 
 
@@ -63,7 +87,7 @@ def test_graphql_query_project(client):
         project(id: %d) {
             id
             name
-            local_path
+            localPath
             description
         }
     }
@@ -75,7 +99,7 @@ def test_graphql_query_project(client):
     assert "data" in data
     assert data["data"]["project"]["id"] == project_id
     assert data["data"]["project"]["name"] == "test-project"
-    assert data["data"]["project"]["local_path"] == "/tmp/test"
+    assert data["data"]["project"]["localPath"] == "/tmp/test"
     assert data["data"]["project"]["description"] == "Test project"
 
 
@@ -96,7 +120,7 @@ def test_graphql_query_projects(client):
         projects {
             id
             name
-            local_path
+            localPath
         }
     }
     """

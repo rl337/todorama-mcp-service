@@ -1744,6 +1744,73 @@ def test_create_task_from_nonexistent_template(temp_db):
         )
 
 
+def test_verify_all_template_fields_populated(temp_db):
+    """Comprehensive test to verify all template fields are correctly populated in created task.
+    
+    This test verifies that when creating a task from a template, all template fields
+    (name, task_type, task_instruction, verification_instruction, priority, estimated_hours, notes)
+    are correctly mapped to the created task.
+    """
+    db, _ = temp_db
+    
+    # Create template with ALL fields populated (including optional ones)
+    template_id = db.create_template(
+        name="Complete Template",
+        task_type="abstract",
+        task_instruction="Complete instruction",
+        verification_instruction="Complete verification",
+        description="Template description (metadata only, not copied to task)",
+        priority="critical",
+        estimated_hours=5.5,
+        notes="Template notes"
+    )
+    
+    # Create task from template without any overrides
+    task_id = db.create_task_from_template(
+        template_id=template_id,
+        agent_id="test-agent"
+    )
+    
+    task = db.get_task(task_id)
+    assert task is not None
+    
+    # Verify ALL template fields are correctly populated
+    assert task["title"] == "Complete Template", "Title should be populated from template name"
+    assert task["task_type"] == "abstract", "Task type should be populated from template"
+    assert task["task_instruction"] == "Complete instruction", "Task instruction should be populated from template"
+    assert task["verification_instruction"] == "Complete verification", "Verification instruction should be populated from template"
+    assert task["priority"] == "critical", "Priority should be populated from template"
+    assert task["estimated_hours"] == 5.5, "Estimated hours should be populated from template"
+    assert task["notes"] == "Template notes", "Notes should be populated from template"
+    
+    # Verify template description is NOT copied (it's template metadata only)
+    # Tasks don't have a description field, so this is expected behavior
+    
+    # Test with template having None/optional fields
+    template_id_minimal = db.create_template(
+        name="Minimal Template",
+        task_type="concrete",
+        task_instruction="Minimal instruction",
+        verification_instruction="Minimal verification"
+        # priority, estimated_hours, notes are None/optional
+    )
+    
+    task_id_minimal = db.create_task_from_template(
+        template_id=template_id_minimal,
+        agent_id="test-agent"
+    )
+    
+    task_minimal = db.get_task(task_id_minimal)
+    assert task_minimal is not None
+    assert task_minimal["title"] == "Minimal Template"
+    assert task_minimal["task_type"] == "concrete"
+    assert task_minimal["task_instruction"] == "Minimal instruction"
+    assert task_minimal["verification_instruction"] == "Minimal verification"
+    assert task_minimal["priority"] == "medium", "Priority should default to 'medium' when template priority is None"
+    assert task_minimal["estimated_hours"] is None, "Estimated hours can be None"
+    assert task_minimal["notes"] is None, "Notes can be None"
+
+
 def test_template_name_unique_constraint(temp_db):
     """Test that template names must be unique."""
     db, _ = temp_db
@@ -2087,8 +2154,9 @@ def test_get_activity_feed_filtered_by_agent(temp_db):
     for entry in feed:
         assert entry["agent_id"] == "agent-1"
     
-    # Should include created (by test-agent), update 1, and completed
-    assert len(feed) >= 3
+    # Should include update 1 (by agent-1) and completed (by agent-1)
+    # Note: created entry is from test-agent, so it's excluded by agent filter
+    assert len(feed) >= 2
 
 
 def test_get_activity_feed_filtered_by_date_range(temp_db):
@@ -2108,7 +2176,8 @@ def test_get_activity_feed_filtered_by_date_range(temp_db):
     db.add_task_update(task_id, "agent-1", "Update 1", "progress")
     
     # Get feed for last hour (should include recent activities)
-    end_date = datetime.now()
+    from datetime import UTC
+    end_date = datetime.now(UTC)
     start_date = end_date - timedelta(hours=1)
     
     feed = db.get_activity_feed(
@@ -2120,6 +2189,9 @@ def test_get_activity_feed_filtered_by_date_range(temp_db):
     # All entries should be within date range
     for entry in feed:
         entry_date = datetime.fromisoformat(entry["created_at"].replace("Z", "+00:00"))
+        # Make entry_date timezone-aware if it's not
+        if entry_date.tzinfo is None:
+            entry_date = entry_date.replace(tzinfo=UTC)
         assert start_date <= entry_date <= end_date
 
 
@@ -2566,12 +2638,12 @@ def test_api_key_different_projects(temp_db):
     # List keys for project 1 should only return key1
     keys = db.list_api_keys(project1_id)
     assert len(keys) == 1
-    assert keys[0]["id"] == key1_id
+    assert keys[0]["key_id"] == key1_id  # APIKeyResponse uses 'key_id', not 'id'
     
     # List keys for project 2 should only return key2
     keys = db.list_api_keys(project2_id)
     assert len(keys) == 1
-    assert keys[0]["id"] == key2_id
+    assert keys[0]["key_id"] == key2_id  # APIKeyResponse uses 'key_id', not 'id'
 
 
 def test_get_api_key_by_hash_invalid(temp_db):
@@ -3479,5 +3551,6 @@ def test_get_agent_learning_stats(temp_db):
     assert stats["total_experiences"] == 3
     assert stats["success_count"] == 2
     assert stats["failure_count"] == 1
-    assert stats["success_rate"] == 2.0 / 3.0
-    assert stats["avg_execution_time"] == (1.0 + 2.0 + 0.5) / 3.0
+    assert stats["success_rate"] == pytest.approx(2.0 / 3.0)
+    # avg_execution_time is rounded to 2 decimal places in the function
+    assert stats["avg_execution_time"] == pytest.approx((1.0 + 2.0 + 0.5) / 3.0, abs=0.01)

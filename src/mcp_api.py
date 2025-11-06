@@ -448,8 +448,8 @@ class MCPTodoAPI:
     @staticmethod
     def verify_task(task_id: int, agent_id: str, notes: Optional[str] = None) -> Dict[str, Any]:
         """
-        Verify a task's completion. This is used internally and via REST API, but not exposed as an MCP tool.
-        Agents should use complete_task() instead, which handles verification automatically.
+        Verify a task's completion. Marks verification_status from 'unverified' to 'verified'.
+        This is exposed as an MCP tool and can be called via MCP protocol.
         
         Args:
             task_id: Task ID to verify
@@ -2201,6 +2201,31 @@ MCP_FUNCTIONS = [
                 "minLength": 1,
                 "maxLength": 100,
                 "example": "cursor-agent"
+            }
+        }
+    },
+    {
+        "name": "verify_task",
+        "description": "Verify a task's completion. Marks verification_status from 'unverified' to 'verified' for tasks that are complete but not yet verified. This is used when a task has been completed but needs verification to confirm it meets all requirements. Use this for verification tasks (tasks showing needs_verification=True). Returns: Dictionary with success status and verification message.\n\nERROR HANDLING:\n- Returns {\"success\": False, \"error\": \"Task X not found...\"} if task_id doesn't exist. Verify task_id is correct.\n- Returns {\"success\": False, \"error\": \"Task X is already verified...\"} if task is already verified. No action needed.\n- Returns {\"success\": False, \"error\": \"Failed to verify task X: ...\"} if verification fails (e.g., task not in complete status). Ensure task is complete before verifying.",
+        "parameters": {
+            "task_id": {
+                "type": "integer",
+                "description": "ID of the task to verify. Must be a positive integer. Task must be in 'complete' status.",
+                "minimum": 1,
+                "example": 123
+            },
+            "agent_id": {
+                "type": "string",
+                "description": "Your agent identifier. Used to track who verified the task. Must be a non-empty string (1-100 characters).",
+                "minLength": 1,
+                "maxLength": 100,
+                "example": "cursor-agent"
+            },
+            "notes": {
+                "type": "string",
+                "optional": True,
+                "description": "Optional notes about the verification. Helpful for documenting what was verified or any issues found.",
+                "example": "Verification PASSED. All requirements met. Tests pass, functionality works as specified."
             }
         }
     },

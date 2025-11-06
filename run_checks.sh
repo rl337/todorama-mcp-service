@@ -114,6 +114,7 @@ run_tests() {
         "tests/test_cli.py"
         "tests/test_conversation_storage.py"
         "tests/test_security_headers.py"
+        "tests/test_routes_tasks.py"
     )
     
     local failed_tests=0
@@ -136,10 +137,18 @@ run_tests() {
             pytest_cmd="python3 -m pytest"
         fi
         
-        if $pytest_cmd "$test_file" -v --tb=short; then
+        # Add timeout to prevent hanging tests (5 minutes per test file)
+        # Use --kill-after=10 to force kill if TERM doesn't work within 10 seconds
+        # Use timeout to create a process group that can be killed
+        if timeout --kill-after=10 300 $pytest_cmd "$test_file" -v --tb=short 2>&1; then
             print_success "$(basename $test_file) passed"
         else
-            print_error "$(basename $test_file) failed"
+            EXIT_CODE=$?
+            if [ $EXIT_CODE -eq 124 ]; then
+                print_error "$(basename $test_file) TIMED OUT after 5 minutes"
+            else
+                print_error "$(basename $test_file) failed"
+            fi
             failed_tests=$((failed_tests + 1))
         fi
     done
@@ -173,7 +182,18 @@ check_code_quality() {
     done
     
     # Check for imports
-    if python3 -c "import sys; sys.path.insert(0, 'src'); from database import TodoDatabase; from main import app; from mcp_api import MCPTodoAPI; from backup import BackupManager" 2>/dev/null; then
+    # Use UV venv if available, otherwise Poetry, otherwise system python
+    if command -v uv &> /dev/null && [ -f ".venv/bin/python3" ]; then
+        python_cmd=".venv/bin/python3"
+    elif command -v uv &> /dev/null; then
+        python_cmd="uv run python3"
+    elif command -v poetry &> /dev/null; then
+        python_cmd="poetry run python3"
+    else
+        python_cmd="python3"
+    fi
+    
+    if $python_cmd -c "import sys; sys.path.insert(0, 'src'); from database import TodoDatabase; from main import app; from mcp_api import MCPTodoAPI; from backup import BackupManager" 2>/dev/null; then
         print_success "All imports resolve correctly"
     else
         print_error "Import errors detected"
@@ -233,7 +253,18 @@ test_database_schema() {
     # Create a temporary database and test schema initialization
     local test_db="/tmp/todo_test_$(date +%s).db"
     
-    if python3 << EOF 2>/dev/null
+    # Use UV venv if available, otherwise Poetry, otherwise system python
+    if command -v uv &> /dev/null && [ -f ".venv/bin/python3" ]; then
+        python_cmd=".venv/bin/python3"
+    elif command -v uv &> /dev/null; then
+        python_cmd="uv run python3"
+    elif command -v poetry &> /dev/null; then
+        python_cmd="poetry run python3"
+    else
+        python_cmd="python3"
+    fi
+    
+    if $python_cmd << EOF 2>/dev/null
 import sys
 sys.path.insert(0, 'src')
 from database import TodoDatabase

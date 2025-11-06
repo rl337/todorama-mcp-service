@@ -4,6 +4,7 @@ Centralizes service initialization and provides access to all services.
 """
 import os
 import logging
+import tempfile
 from typing import Optional
 
 from database import TodoDatabase
@@ -24,14 +25,33 @@ class ServiceContainer:
     
     def __init__(self):
         # Initialize database
-        db_path = os.getenv("TODO_DB_PATH", "/app/data/todos.db")
+        # Use tempfile.gettempdir() as fallback if /app is not writable (e.g., in test environments)
+        default_db_path = "/app/data/todos.db"
+        try:
+            # Check if /app is writable
+            os.makedirs("/app/data", exist_ok=True)
+            db_path = os.getenv("TODO_DB_PATH", default_db_path)
+        except (PermissionError, OSError):
+            # Fallback to temp directory if /app is not accessible
+            temp_dir = tempfile.gettempdir()
+            db_path = os.getenv("TODO_DB_PATH", os.path.join(temp_dir, "todos.db"))
+        
         self.db = TodoDatabase(db_path)
         
         # Initialize MCP API with database
         set_db(self.db)
         
         # Initialize backup manager
-        backups_dir = os.getenv("TODO_BACKUPS_DIR", "/app/backups")
+        # Use tempfile.gettempdir() as fallback if /app is not writable (e.g., in test environments)
+        default_backups_dir = "/app/backups"
+        try:
+            # Check if /app is writable
+            os.makedirs("/app/backups", exist_ok=True)
+            backups_dir = os.getenv("TODO_BACKUPS_DIR", default_backups_dir)
+        except (PermissionError, OSError):
+            # Fallback to temp directory if /app is not accessible
+            temp_dir = tempfile.gettempdir()
+            backups_dir = os.getenv("TODO_BACKUPS_DIR", os.path.join(temp_dir, "backups"))
         self.backup_manager = BackupManager(db_path, backups_dir)
         
         # Initialize and start backup scheduler (nightly backups)
@@ -103,4 +123,9 @@ def get_services() -> ServiceContainer:
 def get_db() -> TodoDatabase:
     """Get the database instance from the service container."""
     return get_services().db
+
+
+def get_backup_manager() -> BackupManager:
+    """Get the backup manager instance from the service container."""
+    return get_services().backup_manager
 

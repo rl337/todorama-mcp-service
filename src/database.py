@@ -7,6 +7,7 @@ import json
 import hashlib
 import secrets
 import time
+import threading
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
 from enum import Enum
@@ -14,7 +15,17 @@ import logging
 
 from db_adapter import get_database_adapter, BaseDatabaseAdapter, DatabaseType
 from tracing import trace_span, add_span_attribute
-from opentelemetry import trace
+try:
+    from opentelemetry import trace
+except ImportError:
+    # Fallback for environments where opentelemetry is not available
+    class DummySpanKind:
+        CLIENT = "CLIENT"
+        SERVER = "SERVER"
+        INTERNAL = "INTERNAL"
+    class DummyTrace:
+        SpanKind = DummySpanKind()
+    trace = DummyTrace()
 
 logger = logging.getLogger(__name__)
 
@@ -1513,11 +1524,12 @@ class TodoDatabase:
         try:
             cursor = conn.cursor()
             # Get tasks where due_date is within the next N days and task is not complete
+            # Use datetime() function to properly handle ISO format strings
             cursor.execute("""
                 SELECT * FROM tasks
                 WHERE due_date IS NOT NULL
-                    AND due_date >= datetime('now')
-                    AND due_date <= datetime('now', '+' || ? || ' days')
+                    AND datetime(due_date) >= datetime('now')
+                    AND datetime(due_date) <= datetime('now', '+' || ? || ' days')
                     AND task_status != 'complete'
                 ORDER BY due_date ASC
                 LIMIT ?
@@ -1571,33 +1583,66 @@ class TodoDatabase:
                 self._execute_with_logging(cursor, query_sql, (tsquery, tsquery, limit))
             else:
                 # SQLite uses FTS5
+                fts5_worked = False
+                fts5_results = []
                 try:
                     # Use FTS5 MATCH with ranking
                     # Join with tasks table to get full task data
                     # bm25() provides BM25 ranking (lower is better, so we order ASC)
+                    # Note: In FTS5, MATCH must use the table name, not an alias
                     query_sql = """
                         SELECT t.*
                         FROM tasks t
-                        JOIN tasks_fts fts ON t.id = fts.rowid
-                        WHERE fts MATCH ?
-                        ORDER BY bm25(fts) ASC, t.created_at DESC
+                        JOIN tasks_fts ON t.id = tasks_fts.rowid
+                        WHERE tasks_fts MATCH ?
+                        ORDER BY bm25(tasks_fts) ASC, t.created_at DESC
                         LIMIT ?
                     """
                     self._execute_with_logging(cursor, query_sql, (search_query, limit))
+                    # Check if FTS5 returned results - if not, fall back to LIKE
+                    fts_results = cursor.fetchall()
+                    if fts_results:
+                        # FTS5 worked and returned results - use them
+                        fts5_worked = True
+                        # Store results temporarily to return them
+                        for row in fts_results:
+                            fts5_results.append(dict(row))
+                    else:
+                        # FTS5 returned empty - likely index not populated, use LIKE fallback
+                        logger.warning(f"FTS5 returned no results, falling back to LIKE")
                 except sqlite3.OperationalError:
                     # If FTS5 isn't available or table doesn't exist, fall back to LIKE search
                     logger.warning(f"FTS5 search failed, falling back to LIKE")
-                    search_pattern = f"%{search_query}%"
-                    query_sql = """
-                        SELECT * FROM tasks
-                        WHERE title LIKE ? 
-                           OR task_instruction LIKE ?
-                           OR notes LIKE ?
-                        ORDER BY created_at DESC
-                        LIMIT ?
-                    """
-                    self._execute_with_logging(cursor, query_sql, (search_pattern, search_pattern, search_pattern, limit))
+                
+                # Use LIKE fallback (either FTS5 failed or returned empty)
+                if not fts5_worked:
+                    # Split search query into keywords and search for all of them
+                    keywords = search_query.split()
+                    if not keywords:
+                        # Empty query, return empty results
+                        query_sql = "SELECT * FROM tasks WHERE 1=0 LIMIT ?"
+                        self._execute_with_logging(cursor, query_sql, (limit,))
+                    else:
+                        # Build LIKE conditions for each keyword (all keywords must match)
+                        like_conditions = []
+                        params = []
+                        for keyword in keywords:
+                            pattern = f"%{keyword}%"
+                            like_conditions.append(f"(title LIKE ? OR task_instruction LIKE ? OR notes LIKE ?)")
+                            params.extend([pattern, pattern, pattern])
+                        query_sql = f"""
+                            SELECT DISTINCT * FROM tasks
+                            WHERE {' AND '.join(like_conditions)}
+                            ORDER BY created_at DESC
+                            LIMIT ?
+                        """
+                        params.append(limit)
+                        self._execute_with_logging(cursor, query_sql, tuple(params))
+                else:
+                    # FTS5 worked, return its results
+                    return fts5_results
             
+            # For PostgreSQL or LIKE fallback, fetch results from cursor
             results = []
             for row in cursor.fetchall():
                 results.append(dict(row))
@@ -1936,36 +1981,68 @@ class TodoDatabase:
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            # Get current verification status for history
-            cursor.execute("SELECT verification_status FROM tasks WHERE id = ?", (task_id,))
+            # Get current status for history
+            cursor.execute("SELECT verification_status, task_status, completed_at FROM tasks WHERE id = ?", (task_id,))
             current = cursor.fetchone()
-            old_status = current["verification_status"] if current else None
+            old_verification_status = current["verification_status"] if current else None
+            old_task_status = current["task_status"] if current else None
+            completed_at = current["completed_at"] if current else None
             
-            # Update verification status and optionally append notes
+            # If task was already completed (has completed_at), set task_status back to complete
+            # This handles the case where a completed task was reserved again for verification
             if notes:
-                cursor.execute("""
-                    UPDATE tasks 
-                    SET verification_status = 'verified',
-                        notes = CASE 
-                            WHEN notes IS NULL OR notes = '' THEN ?
-                            ELSE notes || '\n\n' || ?
-                        END,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                """, (notes, notes, task_id))
+                if completed_at and old_task_status == "in_progress":
+                    cursor.execute("""
+                        UPDATE tasks 
+                        SET verification_status = 'verified',
+                            task_status = 'complete',
+                            notes = CASE 
+                                WHEN notes IS NULL OR notes = '' THEN ?
+                                ELSE notes || '\n\n' || ?
+                            END,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (notes, notes, task_id))
+                else:
+                    cursor.execute("""
+                        UPDATE tasks 
+                        SET verification_status = 'verified',
+                            notes = CASE 
+                                WHEN notes IS NULL OR notes = '' THEN ?
+                                ELSE notes || '\n\n' || ?
+                            END,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (notes, notes, task_id))
             else:
-                cursor.execute("""
-                    UPDATE tasks 
-                    SET verification_status = 'verified',
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                """, (task_id,))
+                if completed_at and old_task_status == "in_progress":
+                    cursor.execute("""
+                        UPDATE tasks 
+                        SET verification_status = 'verified',
+                            task_status = 'complete',
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (task_id,))
+                else:
+                    cursor.execute("""
+                        UPDATE tasks 
+                        SET verification_status = 'verified',
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (task_id,))
             
-            # Record in history
+            # Record verification in history
             cursor.execute("""
                 INSERT INTO change_history (task_id, agent_id, change_type, field_name, old_value, new_value)
                 VALUES (?, ?, 'verified', 'verification_status', ?, 'verified')
-            """, (task_id, agent_id, old_status))
+            """, (task_id, agent_id, old_verification_status))
+            
+            # Record task_status change if we updated it
+            if completed_at and old_task_status == "in_progress":
+                cursor.execute("""
+                    INSERT INTO change_history (task_id, agent_id, change_type, field_name, old_value, new_value)
+                    VALUES (?, ?, 'completed', 'task_status', ?, 'complete')
+                """, (task_id, agent_id, old_task_status))
             
             conn.commit()
             logger.info(f"Task {task_id} verified by agent {agent_id}")
@@ -2533,10 +2610,11 @@ class TodoDatabase:
             
             # Get completed tasks
             completed_params = params + ["complete"]
-            cursor.execute(
-                f"SELECT COUNT(*) as count FROM tasks{where_clause} AND task_status = ?",
-                completed_params
-            )
+            if where_clause:
+                completed_query = f"SELECT COUNT(*) as count FROM tasks{where_clause} AND task_status = ?"
+            else:
+                completed_query = "SELECT COUNT(*) as count FROM tasks WHERE task_status = ?"
+            cursor.execute(completed_query, completed_params)
             completed_tasks = cursor.fetchone()["count"]
             
             # Calculate percentage
@@ -4953,7 +5031,7 @@ class TodoDatabase:
             keys = []
             for row in cursor.fetchall():
                 keys.append({
-                    "key_id": row["id"],
+                    "key_id": row["id"],  # APIKeyResponse expects 'key_id', not 'id'
                     "project_id": row["project_id"],
                     "key_prefix": row["key_prefix"],
                     "name": row["name"],
@@ -6050,4 +6128,58 @@ class TodoDatabase:
             raise
         finally:
             conn.close()
+
+
+class StaleTaskScheduler:
+    """Schedules and manages automatic cleanup of stale tasks."""
+    
+    def __init__(self, database: TodoDatabase, cleanup_interval_hours: int = 1):
+        """Initialize stale task cleanup scheduler.
+        
+        Args:
+            database: TodoDatabase instance
+            cleanup_interval_hours: Hours between cleanup runs (default: 1 hour)
+        """
+        self.database = database
+        self.cleanup_interval_hours = cleanup_interval_hours
+        self.running = False
+        self._thread: Optional[threading.Thread] = None
+    
+    def start(self):
+        """Start the stale task cleanup scheduler."""
+        if self.running:
+            logger.warning("Stale task cleanup scheduler already running")
+            return
+        
+        self.running = True
+        self._thread = threading.Thread(target=self._run_scheduler, daemon=True)
+        self._thread.start()
+        logger.info(f"Stale task cleanup scheduler started (interval: {self.cleanup_interval_hours} hours)")
+    
+    def stop(self):
+        """Stop the stale task cleanup scheduler."""
+        self.running = False
+        if self._thread:
+            self._thread.join(timeout=5)
+        logger.info("Stale task cleanup scheduler stopped")
+    
+    def _run_scheduler(self):
+        """Run the stale task cleanup scheduler loop."""
+        while self.running:
+            try:
+                # Unlock stale tasks
+                unlocked_count = self.database.unlock_stale_tasks()
+                if unlocked_count > 0:
+                    logger.info(f"Stale task cleanup: unlocked {unlocked_count} stale task(s)")
+                
+                # Sleep until next cleanup
+                sleep_seconds = self.cleanup_interval_hours * 3600
+                for _ in range(sleep_seconds):
+                    if not self.running:
+                        break
+                    time.sleep(1)
+            except Exception as e:
+                logger.error(f"Error in stale task cleanup scheduler: {e}", exc_info=True)
+                # Sleep 1 hour before retrying
+                time.sleep(3600)
 

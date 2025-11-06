@@ -6,8 +6,11 @@ import os
 import json
 import tempfile
 from datetime import datetime
+import sys
 
-from src.conversation_storage import ConversationStorage
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from conversation_storage import ConversationStorage
 
 
 @pytest.fixture
@@ -913,7 +916,27 @@ class TestConversationStorage:
 @pytest.mark.asyncio
 async def test_stream_llm_response_success(monkeypatch):
     """Test successfully streaming LLM response."""
-    from src.conversation_storage import ConversationStorage
+    import pytest
+    
+    # Skip if psycopg2 is not available
+    try:
+        import psycopg2
+    except ImportError:
+        pytest.skip("psycopg2 not installed")
+    
+    # Skip if PostgreSQL is not available
+    try:
+        psycopg2.connect(
+            host="localhost",
+            port=5432,
+            dbname="conversations",
+            user="postgres",
+            connect_timeout=1
+        ).close()
+    except (psycopg2.OperationalError, psycopg2.Error):
+        pytest.skip("PostgreSQL not available")
+    
+    from conversation_storage import ConversationStorage
     import httpx
     from unittest.mock import AsyncMock, MagicMock, patch
     
@@ -969,7 +992,27 @@ async def test_stream_llm_response_success(monkeypatch):
 @pytest.mark.asyncio
 async def test_stream_llm_response_with_system_prompt(monkeypatch):
     """Test streaming LLM response with custom system prompt."""
-    from src.conversation_storage import ConversationStorage
+    import pytest
+    
+    # Skip if psycopg2 is not available
+    try:
+        import psycopg2
+    except ImportError:
+        pytest.skip("psycopg2 not installed")
+    
+    # Skip if PostgreSQL is not available
+    try:
+        psycopg2.connect(
+            host="localhost",
+            port=5432,
+            dbname="conversations",
+            user="postgres",
+            connect_timeout=1
+        ).close()
+    except (psycopg2.OperationalError, psycopg2.Error):
+        pytest.skip("PostgreSQL not available")
+    
+    from conversation_storage import ConversationStorage
     import httpx
     from unittest.mock import AsyncMock, MagicMock, patch
     
@@ -1023,7 +1066,27 @@ async def test_stream_llm_response_with_system_prompt(monkeypatch):
 @pytest.mark.asyncio
 async def test_stream_llm_response_llm_disabled():
     """Test that streaming raises error when LLM is not enabled."""
-    from src.conversation_storage import ConversationStorage
+    import pytest
+    
+    # Skip if psycopg2 is not available
+    try:
+        import psycopg2
+    except ImportError:
+        pytest.skip("psycopg2 not installed")
+    
+    # Skip if PostgreSQL is not available
+    try:
+        psycopg2.connect(
+            host="localhost",
+            port=5432,
+            dbname="conversations",
+            user="postgres",
+            connect_timeout=1
+        ).close()
+    except (psycopg2.OperationalError, psycopg2.Error):
+        pytest.skip("PostgreSQL not available")
+    
+    from conversation_storage import ConversationStorage
     
     storage = ConversationStorage()
     storage.llm_enabled = False

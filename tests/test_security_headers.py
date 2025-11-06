@@ -12,7 +12,7 @@ from starlette.responses import JSONResponse
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from src.security_headers import SecurityHeadersMiddleware
+from security_headers import SecurityHeadersMiddleware
 
 
 @pytest.fixture

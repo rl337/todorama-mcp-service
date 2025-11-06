@@ -144,10 +144,12 @@ def test_restore_requires_force(temp_setup):
 
 def test_list_backups(temp_setup):
     """Test listing backups."""
+    import time
     _, db_path, backups_dir, backup_manager = temp_setup
     
-    # Create multiple backups
+    # Create multiple backups with small delay to ensure unique timestamps
     backup1 = backup_manager.create_backup_archive()
+    time.sleep(1.1)  # Sleep more than 1 second to ensure different timestamp
     backup2 = backup_manager.create_backup_archive()
     
     # List backups

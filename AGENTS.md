@@ -155,6 +155,140 @@
      - Commits that are already pushed to remote (unless working on feature branch)
      - Unrelated changes that should remain separate
 
+4. **🚨 MANDATORY: Push changes to remote**
+   - **After completing work and committing changes, you MUST push to origin**
+   - Check if you have unpushed commits: `git status` (look for "ahead of 'origin/main'")
+   - If you have unpushed commits, push them immediately:
+     ```bash
+     # Check what will be pushed
+     git log origin/main..HEAD --oneline
+     
+     # Push all local commits to remote
+     git push origin main
+     # Or if on a different branch:
+     git push origin <branch-name>
+     ```
+   - **Why this matters:**
+     - Unpushed commits are only local - they can be lost if the machine crashes
+     - Other agents/developers can't see your work until it's pushed
+     - CI/CD pipelines won't run on unpushed commits
+     - Collaboration requires shared repository state
+   - **When to push:**
+     - After completing a task and committing changes
+     - After fixing bugs and committing fixes
+     - After verification work that includes code changes
+     - Before moving to a new task (if you have unpushed commits)
+   - **Exception**: If you're working on a feature branch that shouldn't be pushed yet, document this in task updates
+   - **CRITICAL: Always use timeouts for git push:**
+     ```bash
+     timeout 300 git push origin main  # 5 minutes max
+     ```
+
+## ⏱️ Timeout Requirements (CRITICAL)
+
+**ALL agents MUST use timeouts for ALL operations to prevent hanging processes.**
+
+### Why Timeouts Matter
+- Hanging processes consume resources indefinitely
+- They block the agent loop from continuing
+- They can cause cascading failures
+- They prevent proper task management
+
+### Mandatory Timeout Rules
+
+**1. Git Operations:**
+```bash
+# ALWAYS use timeouts for git operations
+timeout 60 git status          # 1 minute max
+timeout 60 git diff            # 1 minute max
+timeout 60 git add -A          # 1 minute max
+timeout 300 git commit         # 5 minutes max
+timeout 300 git push           # 5 minutes max
+```
+
+**2. Test Operations:**
+```bash
+# ALWAYS use timeouts for test runs
+timeout 300 pytest tests/file.py::test_name -v     # 5 minutes max for single test
+timeout 1800 ./run_checks.sh                        # 30 minutes max for full suite
+```
+
+**3. MCP Tool Calls:**
+- MCP tool calls should complete quickly (under 30 seconds)
+- If an MCP call hangs longer than 30 seconds, kill the process and investigate
+- Common causes: database locks, network issues, infinite loops
+
+**4. Agent Execution:**
+- The agent loop script enforces a 1-hour timeout for agent execution
+- If the agent times out, it will be killed and retried on the next iteration
+
+### What to Do When Timeouts Occur
+
+1. **Investigate the root cause:**
+   - Check for hanging tests (infinite loops, network waits)
+   - Check for database locks (multiple processes accessing same DB)
+   - Check for network issues (can't reach remote services)
+
+2. **Fix the underlying issue:**
+   - Fix hanging tests (add proper cleanup, use mocks for network calls)
+   - Fix database lock issues (use transactions, proper connection handling)
+   - Fix network issues (add retries, connection timeouts)
+
+3. **Kill hung processes:**
+   ```bash
+   # Find hung processes
+   ps aux | grep -E "pytest|cursor-agent|git"
+   
+   # Kill specific process
+   kill -9 <PID>
+   
+   # Kill by pattern
+   pkill -9 -f "pytest.*test_mcp_api"
+   ```
+
+4. **Retry the operation:**
+   - After fixing the issue, retry the operation
+   - Monitor for timeout issues
+   - Document any recurring timeout problems
+
+### Timeout Configuration
+
+The agent loop script uses these default timeouts (configurable via environment variables):
+- `AGENT_TIMEOUT=3600` (1 hour) - Maximum time for agent execution
+- `GIT_TIMEOUT=300` (5 minutes) - Maximum time for git operations
+- `TEST_TIMEOUT=1800` (30 minutes) - Maximum time for test suite
+- `MCP_TIMEOUT=30` (30 seconds) - Maximum time for MCP tool calls
+
+### Examples of Timeout Usage
+
+```bash
+# ✅ CORRECT: Using timeout for test run
+timeout 300 pytest tests/test_database.py::test_create_task -v
+
+# ❌ WRONG: No timeout - can hang indefinitely
+pytest tests/test_database.py::test_create_task -v
+
+# ✅ CORRECT: Using timeout for git operations
+timeout 300 git commit -m "Fix timeout issues in test suite"
+
+# ❌ WRONG: No timeout - can hang if pre-commit hook hangs
+git commit -m "Fix timeout issues in test suite"
+
+# ✅ CORRECT: Using timeout for full test suite
+timeout 1800 ./run_checks.sh
+
+# ❌ WRONG: No timeout - can hang if any test hangs
+./run_checks.sh
+```
+
+### Critical Rules
+
+1. **NEVER run operations without timeouts** - Always use the `timeout` command
+2. **If an operation times out, investigate immediately** - Don't ignore timeout errors
+3. **Kill hung processes before retrying** - Don't let them accumulate
+4. **Document timeout issues** - Add task updates explaining what timed out and why
+5. **Fix root causes** - Don't just increase timeouts, fix the underlying issue
+
 ## Test Structure
 
 ### Test Files
@@ -431,7 +565,13 @@ The TODO service exposes MCP tools that are automatically available to you. Use 
    mcp_todo_complete_task(task_id=task_id, agent_id=agent_id, notes="Completed successfully")
    ```
 
-5. **🚨 MANDATORY: If unable to complete, unlock immediately (use MCP tools directly):**
+5. **🚨 MANDATORY: Push changes after completing work:**
+   - After completing a task, check if you have unpushed commits: `git status`
+   - If you have unpushed commits, push them immediately: `git push origin main`
+   - This ensures your work is backed up and available to other agents/developers
+   - See "Before Pushing" section for detailed push requirements
+
+6. **🚨 MANDATORY: If unable to complete, unlock immediately (use MCP tools directly):**
    ```python
    # Use mcp_todo_unlock_task - it's already available as a tool
    mcp_todo_unlock_task(task_id=task_id, agent_id=agent_id)
@@ -724,6 +864,13 @@ try:
         agent_id=agent_id,
         notes="Completed successfully. Built on previous work: [summary of what was done]"
     )
+    
+    # 10. PUSH CHANGES (MANDATORY)
+    # Check for unpushed commits and push them
+    git_status = subprocess.run(["git", "status"], capture_output=True, text=True)
+    if "ahead of" in git_status.stdout:
+        subprocess.run(["git", "push", "origin", "main"])
+        logger.info("Pushed local commits to remote")
     
 except Exception as e:
     logger.error(f"Failed to complete task {task_id}: {e}", exc_info=True)
