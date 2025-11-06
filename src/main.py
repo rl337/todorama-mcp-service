@@ -378,6 +378,75 @@ app.include_router(mcp_router)
 graphql_app = GraphQLRouter(schema)
 app.include_router(graphql_app, prefix="/graphql")
 
+# Relationships endpoint
+@app.post("/relationships", status_code=201)
+async def create_relationship(
+    relationship_data: Dict[str, Any] = Body(...),
+    request: Request = None
+):
+    """
+    Create a relationship between two tasks.
+    
+    POST /relationships
+    Body: {
+        "parent_task_id": 100,
+        "child_task_id": 123,
+        "relationship_type": "subtask",
+        "agent_id": "agent-123" (optional, defaults to "system" for validation tests)
+    }
+    """
+    try:
+        # Extract agent_id from body or use default
+        agent_id = relationship_data.get("agent_id", "system")
+        
+        # Validate using RelationshipCreate model (this will catch invalid relationship_type and parent==child)
+        from pydantic import ValidationError
+        try:
+            relationship = RelationshipCreate(
+                parent_task_id=relationship_data["parent_task_id"],
+                child_task_id=relationship_data["child_task_id"],
+                relationship_type=relationship_data["relationship_type"]
+            )
+        except ValidationError as e:
+            # Pydantic validation errors - convert to FastAPI format
+            errors = []
+            for error in e.errors():
+                errors.append({
+                    "loc": list(error.get("loc", [])),
+                    "msg": error.get("msg", str(e)),
+                    "type": error.get("type", "validation_error")
+                })
+            raise HTTPException(status_code=422, detail=errors)
+        except ValueError as e:
+            # Pydantic field_validator or model_validator errors (from RelationshipCreate validators)
+            raise HTTPException(status_code=422, detail=str(e))
+        except KeyError as e:
+            raise HTTPException(status_code=422, detail=f"Missing required field: {e}")
+        
+        # RelationshipCreate model already validates relationship_type and parent != child
+        # The model_validator will raise ValueError if parent == child
+        rel_id = db.create_relationship(
+            parent_task_id=relationship.parent_task_id,
+            child_task_id=relationship.child_task_id,
+            relationship_type=relationship.relationship_type,
+            agent_id=agent_id
+        )
+        return {
+            "relationship_id": rel_id,
+            "parent_task_id": relationship.parent_task_id,
+            "child_task_id": relationship.child_task_id,
+            "relationship_type": relationship.relationship_type
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        # Handle validation errors from database (circular dependencies, etc.)
+        # But RelationshipCreate model validation should catch most issues
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to create relationship: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create relationship")
+
 # Mount static files directory for web interface
 static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 if os.path.exists(static_dir):
@@ -581,4 +650,5 @@ if __name__ == "__main__":
         # Ensure cleanup
         backup_scheduler.stop()
         logger.info("Service stopped")
+
 

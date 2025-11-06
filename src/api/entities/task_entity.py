@@ -88,8 +88,9 @@ class TaskEntity(BaseEntity):
                 assigned_agent=filters.get("assigned_agent"),
                 project_id=filters.get("project_id"),
                 priority=filters.get("priority"),
-                limit=filters.get("limit", 100),
-                offset=filters.get("offset", 0)
+                order_by=filters.get("order_by"),
+                search=filters.get("search"),
+                limit=filters.get("limit", 100)
             )
             return [dict(task) for task in tasks]
         except Exception as e:
@@ -99,20 +100,68 @@ class TaskEntity(BaseEntity):
         """
         Update a task.
         
-        POST /api/Task/update
-        Body: {"task_id": 123, "title": "New title", ...}
+        PATCH /api/Task/get?task_id=123
+        Body: {"task_status": "in_progress", "verification_status": "verified", "notes": "..."}
         """
         try:
-            # Update task via database
-            # This is a simplified version - you may want to use a TaskUpdate model
+            # Validate update data using TaskUpdate model
+            try:
+                task_update = TaskUpdate(**update_data)
+            except ValidationError as e:
+                # Convert Pydantic validation errors to 422 HTTPException
+                errors = []
+                for error in e.errors():
+                    errors.append({
+                        "loc": list(error["loc"]),
+                        "msg": error["msg"],
+                        "type": error["type"]
+                    })
+                raise HTTPException(
+                    status_code=422,
+                    detail=errors  # FastAPI format: list of error objects
+                )
+            
+            # Check if task exists
             task = self.db.get_task(task_id)
             if not task:
                 raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
             
-            # Update fields
-            # This should use a proper update method from database or service
-            # For now, placeholder
-            return dict(task)
+            # Update task fields in database
+            conn = self.db._get_connection()
+            try:
+                cursor = conn.cursor()
+                
+                # Build UPDATE query dynamically based on provided fields
+                updates = []
+                params = []
+                
+                if task_update.task_status is not None:
+                    updates.append("task_status = ?")
+                    params.append(task_update.task_status)
+                
+                if task_update.verification_status is not None:
+                    updates.append("verification_status = ?")
+                    params.append(task_update.verification_status)
+                
+                if task_update.notes is not None:
+                    updates.append("notes = ?")
+                    params.append(task_update.notes)
+                
+                if updates:
+                    updates.append("updated_at = CURRENT_TIMESTAMP")
+                    params.append(task_id)
+                    
+                    query = f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?"
+                    cursor.execute(query, params)
+                    conn.commit()
+                
+                # Get updated task
+                updated_task = self.db.get_task(task_id)
+                return dict(updated_task)
+            finally:
+                self.db.adapter.close(conn)
+        except HTTPException:
+            raise
         except Exception as e:
             self._handle_error(e, "Failed to update task")
     
@@ -146,11 +195,18 @@ class TaskEntity(BaseEntity):
         Body: {"task_id": 123, "agent_id": "agent-1"}
         """
         try:
+            # Check if task exists first
+            task = self.db.get_task(task_id)
+            if not task:
+                raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+            
             success = self.db.lock_task(task_id, agent_id)
             if not success:
                 raise HTTPException(status_code=409, detail="Task is already locked")
             task = self.db.get_task(task_id)
             return dict(task)
+        except HTTPException:
+            raise
         except Exception as e:
             self._handle_error(e, "Failed to lock task")
     
@@ -229,7 +285,7 @@ class TaskEntity(BaseEntity):
         except Exception as e:
             self._handle_error(e, "Failed to export tasks")
     
-    def overdue(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def overdue(self, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Get overdue tasks.
         
@@ -238,12 +294,15 @@ class TaskEntity(BaseEntity):
         """
         try:
             filters = filters or {}
-            tasks = self.db.get_overdue_tasks(project_id=filters.get("project_id"))
-            return [dict(task) for task in tasks]
+            tasks = self.db.get_overdue_tasks(limit=filters.get("limit", 100))
+            # Filter by project_id if provided (database method doesn't support it)
+            if filters.get("project_id"):
+                tasks = [t for t in tasks if dict(t).get("project_id") == filters.get("project_id")]
+            return {"tasks": [dict(task) for task in tasks]}
         except Exception as e:
             self._handle_error(e, "Failed to get overdue tasks")
     
-    def approaching_deadline(self, days_ahead: int = 3, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def approaching_deadline(self, days_ahead: int = 3, filters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Get tasks approaching deadline.
         
@@ -258,7 +317,7 @@ class TaskEntity(BaseEntity):
             # Filter by project_id if provided
             if filters.get("project_id"):
                 tasks = [t for t in tasks if dict(t).get("project_id") == filters.get("project_id")]
-            return [dict(task) for task in tasks]
+            return {"tasks": [dict(task) for task in tasks]}
         except Exception as e:
             self._handle_error(e, "Failed to get tasks approaching deadline")
     

@@ -36,6 +36,7 @@ def get_entity_class(entity_name: str):
 
 @router.post("/{entity_name}/{action}")
 @router.get("/{entity_name}/{action}")
+@router.patch("/{entity_name}/{action}")
 async def entity_command(
     entity_name: str,
     action: str,
@@ -95,15 +96,43 @@ async def entity_command(
                 detail=f"Action '{action}' not found on entity '{entity_name}'. Available actions: {[m for m in dir(entity) if not m.startswith('_') and callable(getattr(entity, m))]}"
             )
         
-        # Parse request body for POST or query params for GET
-        if request.method == "POST":
+        # Parse request body for POST/PATCH or query params for GET
+        if request.method in ["POST", "PATCH"]:
             try:
                 body = await request.json()
             except Exception:
                 # If no body, use empty dict
                 body = {}
-            # Call method with body as kwargs
-            result = action_method(**body)
+            # For PATCH on "get" action, treat as update
+            if request.method == "PATCH" and actual_action == "get":
+                # PATCH /api/Task/get?task_id=123 with body should update the task
+                # Extract task_id from query params
+                query_params = dict(request.query_params)
+                task_id = None
+                for key, value in query_params.items():
+                    if key == "task_id":
+                        try:
+                            task_id = int(value)
+                        except ValueError:
+                            pass
+                        break
+                if task_id:
+                    # Call update method with task_id and body
+                    if hasattr(entity, "update"):
+                        result = entity.update(task_id=task_id, update_data=body)
+                    else:
+                        raise HTTPException(
+                            status_code=405,
+                            detail=f"Update not supported for entity '{entity_name}'"
+                        )
+                else:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="task_id parameter required for PATCH /api/{entity_name}/get"
+                    )
+            else:
+                # Call method with body as kwargs
+                result = action_method(**body)
         else:
             # GET request - use query params
             query_params = dict(request.query_params)
@@ -123,8 +152,13 @@ async def entity_command(
             
             # For GET, pass params as filters or direct args
             # If action is 'list', wrap in filters dict
+            # Exception: BackupEntity.list() doesn't accept filters
             if actual_action == "list":
-                result = action_method(filters=params)
+                if entity_name == "Backup":
+                    # BackupEntity.list() doesn't accept any parameters
+                    result = action_method()
+                else:
+                    result = action_method(filters=params)
             elif actual_action == "search":
                 result = action_method(query=params.get("query", ""), limit=int(params.get("limit", 100)))
             elif actual_action == "export" and format_param:

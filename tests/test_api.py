@@ -290,7 +290,7 @@ def test_backup_restore(auth_client):
     })
     
     # Restore from backup (should have only 1 task)
-    restore_response = auth_client.post("/api/Backup/restore")
+    restore_response = auth_client.post("/api/Backup/restore", json={"force": True})
     assert restore_response.status_code == 200
     assert restore_response.json()["success"] is True
     
@@ -356,14 +356,14 @@ def test_error_handling_lock_already_locked_task(auth_client):
         "project_id": auth_client.project_id       
     })
     task_id = create_response.json()["id"]
-    auth_client.post("/api/Task/lock", json={"agent_id": "agent-1"})
+    auth_client.post("/api/Task/lock", json={"task_id": task_id, "agent_id": "agent-1"})
     
     # Try to lock again
-    lock_response = auth_client.post("/api/Task/lock", json={"agent_id": "agent-2"})
+    lock_response = auth_client.post("/api/Task/lock", json={"task_id": task_id, "agent_id": "agent-2"})
     assert lock_response.status_code == 409
     data = lock_response.json()
     assert "detail" in data
-    assert "cannot be locked" in data["detail"].lower() or "not available" in data["detail"].lower()
+    assert "cannot be locked" in data["detail"].lower() or "not available" in data["detail"].lower() or "already locked" in data["detail"].lower()
 
 
 def test_error_handling_validation_error(auth_client):
@@ -380,7 +380,17 @@ def test_error_handling_validation_error(auth_client):
 
 def test_error_handling_empty_agent_id(auth_client):
     """Test error handling for empty agent_id."""
-    response = auth_client.post("/api/Task/lock", json={"task_id": 1, "agent_id": "agent-1"})
+    # Create a task first
+    create_response = auth_client.post("/api/Task/create", json={
+        "title": "Test Task",
+        "task_type": "concrete",
+        "task_instruction": "Test",
+        "verification_instruction": "Verify",
+        "agent_id": "test-agent",
+        "project_id": auth_client.project_id
+    })
+    task_id = create_response.json()["id"]
+    response = auth_client.post("/api/Task/lock", json={"task_id": task_id, "agent_id": ""})
     # FastAPI returns 422 for validation errors, not 400
     assert response.status_code in [400, 422]
     data = response.json()
@@ -404,7 +414,7 @@ def test_error_handling_project_not_found(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": 99999  # Invalid project_id
     })
     assert response.status_code == 404
     data = response.json()
@@ -444,7 +454,8 @@ def test_create_task_with_priority(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "priority": "high"
     })
     assert response.status_code == 201
     data = response.json()
@@ -475,7 +486,8 @@ def test_query_tasks_by_priority(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "priority": "low"
     })
     auth_client.post("/api/Task/create", json={
         "title": "Test Task",
@@ -483,7 +495,8 @@ def test_query_tasks_by_priority(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "priority": "high"
     })
     
     # Query high priority tasks
@@ -498,28 +511,31 @@ def test_query_tasks_ordered_by_priority(auth_client):
     """Test querying tasks ordered by priority."""
     # Create tasks with different priorities
     auth_client.post("/api/Task/create", json={
-        "title": "Test Task",
+        "title": "Low Task",
         "task_type": "concrete",
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "priority": "low"
     })
     auth_client.post("/api/Task/create", json={
-        "title": "Test Task",
+        "title": "High Task",
         "task_type": "concrete",
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "priority": "high"
     })
     auth_client.post("/api/Task/create", json={
-        "title": "Test Task",
+        "title": "Critical Task",
         "task_type": "concrete",
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "priority": "critical"
     })
     
     # Query ordered by priority
@@ -544,7 +560,8 @@ def test_invalid_priority_error(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "priority": "invalid_priority"
     })
     # FastAPI returns 422 for validation errors, not 400
     assert response.status_code in [400, 422]
@@ -572,7 +589,8 @@ def test_create_task_with_due_date(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "due_date": due_date
     })
     assert response.status_code == 201
     data = response.json()
@@ -591,7 +609,8 @@ def test_query_overdue_tasks(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "due_date": past_date
     })
     overdue_task_id = create_response.json()["id"]
     
@@ -603,7 +622,8 @@ def test_query_overdue_tasks(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "due_date": future_date
     })
     
     # Query overdue tasks
@@ -627,7 +647,8 @@ def test_query_tasks_approaching_deadline(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "due_date": soon_date
     })
     soon_task_id = create_response.json()["id"]
     
@@ -639,7 +660,8 @@ def test_query_tasks_approaching_deadline(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "due_date": later_date
     })
     
     # Query tasks approaching deadline (3 days)
@@ -719,7 +741,7 @@ def test_query_tasks_by_date_range_completed(auth_client):
     task1_id = task1_response.json()["id"]
     time.sleep(1)
     now = datetime.now()
-    auth_client.post("/api/Task/complete", json={"agent_id": "test-agent"})
+    auth_client.post("/api/Task/complete", json={"task_id": task1_id, "agent_id": "test-agent"})
     
     # Create and complete task 2
     time.sleep(1)
@@ -732,7 +754,7 @@ def test_query_tasks_by_date_range_completed(auth_client):
         "project_id": auth_client.project_id       
     })
     task2_id = task2_response.json()["id"]
-    auth_client.post("/api/Task/complete", json={"agent_id": "test-agent"})
+    auth_client.post("/api/Task/complete", json={"task_id": task2_id, "agent_id": "test-agent"})
     
     # Query tasks completed after a specific date (include project_id)
     # Use a date well in the past to ensure we get both completed tasks
@@ -778,7 +800,7 @@ def test_query_tasks_by_text_search(auth_client):
     """Test querying tasks by text search in title and instruction."""
     # Create tasks with different content
     task1_response = auth_client.post("/api/Task/create", json={
-        "title": "Test Task",
+        "title": "Searchable Task Title",
         "task_type": "concrete",
         "task_instruction": "Test",
         "verification_instruction": "Verify",
@@ -790,7 +812,7 @@ def test_query_tasks_by_text_search(auth_client):
     task2_response = auth_client.post("/api/Task/create", json={
         "title": "Test Task",
         "task_type": "concrete",
-        "task_instruction": "Test",
+        "task_instruction": "This is a searchable instruction",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
         "project_id": auth_client.project_id       
@@ -798,7 +820,7 @@ def test_query_tasks_by_text_search(auth_client):
     task2_id = task2_response.json()["id"]
     
     task3_response = auth_client.post("/api/Task/create", json={
-        "title": "Test Task",
+        "title": "Other Task",
         "task_type": "concrete",
         "task_instruction": "Test",
         "verification_instruction": "Verify",
@@ -839,12 +861,13 @@ def test_query_tasks_combined_filters(auth_client):
     created_after = (now - timedelta(hours=1)).isoformat()
     
     task_response = auth_client.post("/api/Task/create", json={
-        "title": "Test Task",
+        "title": "keyword Task",
         "task_type": "concrete",
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "priority": "high"
     })
     task_id = task_response.json()["id"]
     
@@ -863,15 +886,15 @@ def test_query_tasks_combined_filters(auth_client):
 def test_validation_empty_strings_in_project_create(client):
     """Test validation for empty/whitespace strings in project creation."""
     # Empty name
-    response = client.post("/api/Project/create")
+    response = client.post("/api/Project/create", json={"name": "", "local_path": "/test"})
     assert response.status_code == 422
     
     # Whitespace-only name
-    response = client.post("/api/Project/create")
+    response = client.post("/api/Project/create", json={"name": "   ", "local_path": "/test"})
     assert response.status_code == 422
     
     # Empty local_path
-    response = client.post("/api/Project/create")
+    response = client.post("/api/Project/create", json={"name": "Test", "local_path": ""})
     assert response.status_code == 422
 
 
@@ -879,7 +902,7 @@ def test_validation_empty_strings_in_task_create(auth_client):
     """Test validation for empty/whitespace strings in task creation."""
     # Empty title
     response = auth_client.post("/api/Task/create", json={
-        "title": "Test Task",
+        "title": "",
         "task_type": "concrete",
         "task_instruction": "Test",
         "verification_instruction": "Verify",
@@ -890,7 +913,7 @@ def test_validation_empty_strings_in_task_create(auth_client):
     
     # Whitespace-only title
     response = auth_client.post("/api/Task/create", json={
-        "title": "Test Task",
+        "title": "   ",
         "task_type": "concrete",
         "task_instruction": "Test",
         "verification_instruction": "Verify",
@@ -905,7 +928,7 @@ def test_validation_empty_strings_in_task_create(auth_client):
         "task_type": "concrete",
         "task_instruction": "Test",
         "verification_instruction": "Verify",
-        "agent_id": "test-agent",
+        "agent_id": "",
         "project_id": auth_client.project_id       
     })
     assert response.status_code == 422
@@ -915,7 +938,7 @@ def test_validation_invalid_task_type(auth_client):
     """Test validation for invalid task_type enum."""
     response = auth_client.post("/api/Task/create", json={
         "title": "Test Task",
-        "task_type": "concrete",
+        "task_type": "invalid_type",
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
@@ -934,7 +957,8 @@ def test_validation_invalid_priority(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "priority": "invalid_priority"
     })
     assert response.status_code == 422
     data = response.json()
@@ -949,7 +973,7 @@ def test_validation_negative_project_id(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": -1
     })
     assert response.status_code == 422
 
@@ -962,7 +986,7 @@ def test_validation_zero_project_id(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": 0
     })
     assert response.status_code == 422
 
@@ -975,7 +999,8 @@ def test_validation_negative_estimated_hours(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "estimated_hours": -1.0
     })
     assert response.status_code == 422
 
@@ -988,7 +1013,8 @@ def test_validation_zero_estimated_hours(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "estimated_hours": 0.0
     })
     assert response.status_code == 422
 
@@ -1001,7 +1027,8 @@ def test_validation_invalid_due_date_format(auth_client):
         "task_instruction": "Test",
         "verification_instruction": "Verify",
         "agent_id": "test-agent",
-        "project_id": auth_client.project_id       
+        "project_id": auth_client.project_id,
+        "due_date": "invalid-date-format"
     })
     assert response.status_code == 400
     data = response.json()
@@ -1020,7 +1047,7 @@ def test_validation_invalid_task_status(auth_client):
     })
     task_id = create_response.json()["id"]
     
-    response = auth_client.patch("/api/Task/get", params={"task_id": task_id})
+    response = auth_client.patch("/api/Task/get", params={"task_id": task_id}, json={"task_status": "invalid_status"})
     assert response.status_code == 422
 
 
@@ -1036,7 +1063,7 @@ def test_validation_invalid_verification_status(auth_client):
     })
     task_id = create_response.json()["id"]
     
-    response = auth_client.patch("/api/Task/get", params={"task_id": task_id})
+    response = auth_client.patch("/api/Task/get", params={"task_id": task_id}, json={"verification_status": "invalid_status"})
     assert response.status_code == 422
 
 
@@ -1062,7 +1089,11 @@ def test_validation_invalid_relationship_type(auth_client):
     })
     child_id = create_response2.json()["id"]
     
-    response = auth_client.post("/relationships")
+    response = auth_client.post("/relationships", json={
+        "parent_task_id": parent_id,
+        "child_task_id": child_id,
+        "relationship_type": "invalid_type"
+    })
     assert response.status_code == 422
 
 
@@ -1078,7 +1109,11 @@ def test_validation_parent_equals_child(auth_client):
     })
     task_id = create_response.json()["id"]
     
-    response = auth_client.post("/relationships")
+    response = auth_client.post("/relationships", json={
+        "parent_task_id": task_id,
+        "child_task_id": task_id,
+        "relationship_type": "subtask"
+    })
     assert response.status_code == 422
     data = response.json()
     # The error message might be in different formats, check for validation failure

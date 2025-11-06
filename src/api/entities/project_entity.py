@@ -12,15 +12,38 @@ from models.project_models import ProjectCreate, ProjectResponse
 class ProjectEntity(BaseEntity):
     """Project entity with command pattern methods."""
     
-    def create(self, project_data: Dict[str, Any]) -> Dict[str, Any]:
+    def create(self, **kwargs) -> Dict[str, Any]:
         """
         Create a new project.
         
         POST /api/Project/create
-        Body: ProjectCreate model as dict
+        Body: ProjectCreate model fields directly (name, local_path, etc.)
         """
         try:
-            project_create = ProjectCreate(**project_data)
+            # Extract project data from kwargs (allow both direct fields and project_data wrapper)
+            if "project_data" in kwargs:
+                project_data = kwargs["project_data"]
+            else:
+                project_data = kwargs
+            
+            # Convert dict to ProjectCreate model - catch validation errors
+            from pydantic import ValidationError
+            try:
+                project_create = ProjectCreate(**project_data)
+            except ValidationError as e:
+                # Convert Pydantic validation errors to 422 HTTPException
+                errors = []
+                for error in e.errors():
+                    errors.append({
+                        "loc": list(error["loc"]),
+                        "msg": error["msg"],
+                        "type": error["type"]
+                    })
+                raise HTTPException(
+                    status_code=422,
+                    detail=errors  # FastAPI format: list of error objects
+                )
+            
             project_id = self.db.create_project(
                 name=project_create.name,
                 local_path=project_create.local_path,
@@ -31,6 +54,8 @@ class ProjectEntity(BaseEntity):
             if not created:
                 raise HTTPException(status_code=500, detail="Failed to retrieve created project")
             return dict(created)
+        except HTTPException:
+            raise
         except Exception as e:
             self._handle_error(e, "Failed to create project")
     
