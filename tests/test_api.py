@@ -224,6 +224,10 @@ def test_mcp_list_available_tasks(auth_client, temp_db):
     """Test MCP list available tasks."""
     db, _, _ = temp_db
     
+    # Set database for MCP API (required for MCP endpoints)
+    from mcp_api import set_db
+    set_db(db)
+    
     # Create tasks using auth_client (which has project_id)
     auth_client.post("/api/Task/create", json={"title": "Test Task", "task_type": "concrete", "task_instruction": "Test", "verification_instruction": "Verify", "agent_id": "test-agent", "project_id": auth_client.project_id})
     auth_client.post("/api/Task/create", json={"title": "Test Task", "task_type": "abstract", "task_instruction": "Test", "verification_instruction": "Verify", "agent_id": "test-agent", "project_id": auth_client.project_id})    
@@ -2871,7 +2875,7 @@ def test_get_activity_feed(auth_client, temp_db):
     # If wrapped format fails, try direct format
     if create_response.status_code != 201:
         create_response = auth_client.post("/api/Task/create", json={"title": "Test Task", "task_type": "concrete", "task_instruction": "Test", "verification_instruction": "Verify", "agent_id": "test-agent", "project_id": auth_client.project_id})
-        task_id = create_response.json()["id"]
+    task_id = create_response.json()["id"]
     
     # Add some activities using database directly
     db.lock_task(task_id, "agent-1")
@@ -2907,7 +2911,7 @@ def test_get_activity_feed_filtered_by_agent(auth_client, temp_db):
     # If wrapped format fails, try direct format
     if create_response.status_code != 201:
         create_response = auth_client.post("/api/Task/create", json={"title": "Test Task", "task_type": "concrete", "task_instruction": "Test", "verification_instruction": "Verify", "agent_id": "test-agent", "project_id": auth_client.project_id})
-        task_id = create_response.json()["id"]
+    task_id = create_response.json()["id"]
     
     # Add activities from different agents using database directly
     db.add_task_update(task_id, "agent-1", "Update 1", "progress")
@@ -2939,7 +2943,7 @@ def test_get_activity_feed_all_tasks(auth_client, temp_db):
     })
     if task1_response.status_code != 201:
         task1_response = auth_client.post("/api/Task/create", json={"title": "Test Task", "task_type": "concrete", "task_instruction": "Test", "verification_instruction": "Verify", "agent_id": "test-agent", "project_id": auth_client.project_id})
-        task1_id = task1_response.json()["id"]
+    task1_id = task1_response.json()["id"]
     
     task2_response = auth_client.post("/api/Task/create", json={
         "title": "Test Task",
@@ -2951,7 +2955,7 @@ def test_get_activity_feed_all_tasks(auth_client, temp_db):
     })
     if task2_response.status_code != 201:
         task2_response = auth_client.post("/api/Task/create", json={"title": "Test Task", "task_type": "concrete", "task_instruction": "Test", "verification_instruction": "Verify", "agent_id": "test-agent", "project_id": auth_client.project_id})
-        task2_id = task2_response.json()["id"]
+    task2_id = task2_response.json()["id"]
     
     # Add activities using database directly
     db.add_task_update(task1_id, "agent-1", "Update 1", "progress")
@@ -2989,7 +2993,7 @@ def test_get_activity_feed_with_date_filter(auth_client, temp_db):
     })
     if create_response.status_code != 201:
         create_response = auth_client.post("/api/Task/create", json={"title": "Test Task", "task_type": "concrete", "task_instruction": "Test", "verification_instruction": "Verify", "agent_id": "test-agent", "project_id": auth_client.project_id})
-        task_id = create_response.json()["id"]
+    task_id = create_response.json()["id"]
     
     # Add activity using database directly
     db.add_task_update(task_id, "agent-1", "Recent update", "progress")
@@ -3072,7 +3076,7 @@ def test_bulk_complete_partial_failure(auth_client):
     })
     if task1_response.status_code != 201:
         task1_response = auth_client.post("/api/Task/create", json={"title": "Test Task", "task_type": "concrete", "task_instruction": "Test", "verification_instruction": "Verify", "agent_id": "test-agent", "project_id": auth_client.project_id})
-        task1_id = task1_response.json()["id"]
+    task1_id = task1_response.json()["id"]
     lock_response = auth_client.post("/api/Task/lock", json={"agent_id": "test-agent"})
     if lock_response.status_code != 200:
         auth_client.post("/api/Task/lock")
@@ -3237,7 +3241,7 @@ def test_bulk_operations_transaction_rollback(auth_client):
     })
     if task1_response.status_code != 201:
         task1_response = auth_client.post("/api/Task/create", json={"title": "Test Task", "task_type": "concrete", "task_instruction": "Test", "verification_instruction": "Verify", "agent_id": "test-agent", "project_id": auth_client.project_id})
-        task1_id = task1_response.json()["id"]
+    task1_id = task1_response.json()["id"]
     lock_response = auth_client.post("/api/Task/lock", json={"agent_id": "test-agent"})
     if lock_response.status_code != 200:
         auth_client.post("/api/Task/lock")
@@ -3278,7 +3282,7 @@ def test_bulk_assign_locked_tasks(auth_client):
     })
     if task1_response.status_code != 201:
         task1_response = auth_client.post("/api/Task/create", json={"title": "Test Task", "task_type": "concrete", "task_instruction": "Test", "verification_instruction": "Verify", "agent_id": "test-agent", "project_id": auth_client.project_id})
-        task1_id = task1_response.json()["id"]
+    task1_id = task1_response.json()["id"]
     auth_client.post("/api/Task/lock")
     
     # Create unlocked task - use wrapped format like test_create_task
@@ -3292,7 +3296,7 @@ def test_bulk_assign_locked_tasks(auth_client):
     })
     if task2_response.status_code != 201:
         task2_response = auth_client.post("/api/Task/create", json={"title": "Test Task", "task_type": "concrete", "task_instruction": "Test", "verification_instruction": "Verify", "agent_id": "test-agent", "project_id": auth_client.project_id})
-        task2_id = task2_response.json()["id"]
+    task2_id = task2_response.json()["id"]
     
     # Bulk assign (should skip locked task1, assign task2)
     response = auth_client.post("/api/Task/bulk/assign")

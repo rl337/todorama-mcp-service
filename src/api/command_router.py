@@ -2,7 +2,8 @@
 Command pattern router for /api/<Entity>/<action> endpoints.
 Dynamically routes to entity methods based on URL path.
 """
-from fastapi import APIRouter, Request, Depends, Query, Body, HTTPException, Response
+from fastapi import APIRouter, Request, Depends, Query, Body, HTTPException
+from fastapi.responses import Response
 from typing import Dict, Any, Optional, List
 import logging
 
@@ -32,6 +33,74 @@ def get_entity_class(entity_name: str):
     if not entity_class:
         raise HTTPException(status_code=404, detail=f"Entity '{entity_name}' not found")
     return entity_class
+
+
+# Special route for actions with sub-paths like export/json or export/csv
+# This must come before the generic route to match first
+@router.get("/{entity_name}/export/{format}")
+async def entity_export(
+    entity_name: str,
+    format: str,
+    request: Request
+):
+    """Handle export actions with format: /api/Task/export/json or /api/Task/export/csv"""
+    try:
+        # Manually verify API key
+        try:
+            auth = await optional_api_key(request)
+        except Exception:
+            auth = None
+        
+        # Get entity class
+        entity_class = get_entity_class(entity_name)
+        
+        # Get database
+        db = get_db()
+        
+        # Create entity instance with auth info
+        if entity_name == "Backup":
+            backup_manager = get_backup_manager()
+            entity = entity_class(db, backup_manager, auth_info=auth)
+        else:
+            entity = entity_class(db, auth_info=auth)
+        
+        # Get export method
+        if not hasattr(entity, "export"):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Export not supported for entity '{entity_name}'"
+            )
+        
+        action_method = getattr(entity, "export")
+        
+        # Parse query params as filters
+        query_params = dict(request.query_params)
+        params = {}
+        for key, value in query_params.items():
+            try:
+                if value.isdigit():
+                    params[key] = int(value)
+                elif '.' in value and value.replace('.', '').isdigit():
+                    params[key] = float(value)
+                else:
+                    params[key] = value
+            except:
+                params[key] = value
+        
+        # Call export method with format and filters
+        result = action_method(format=format, filters=params)
+        
+        # If result is already a Response object, return it directly
+        if isinstance(result, Response):
+            return result
+        else:
+            return response_context.render_success(result)
+        
+    except HTTPException as e:
+        return response_context.render_from_exception(e)
+    except Exception as e:
+        logger.error(f"Error in entity export {entity_name}.export/{format}: {e}", exc_info=True)
+        return response_context.render_server_error(f"Internal server error: {str(e)}")
 
 
 @router.post("/{entity_name}/{action}")
@@ -178,7 +247,10 @@ async def entity_command(
         
         # Determine response strategy based on action type
         # Create actions return 201, others return 200
-        if actual_action == "create":
+        # If result is already a Response object (e.g., from export), return it directly
+        if isinstance(result, Response):
+            return result
+        elif actual_action == "create":
             return response_context.render_created(result)
         else:
             return response_context.render_success(result)

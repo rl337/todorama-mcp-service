@@ -59,17 +59,34 @@ class TaskEntity(BaseEntity):
         except Exception as e:
             self._handle_error(e, "Failed to create task")
     
-    def get(self, task_id: int) -> Dict[str, Any]:
+    def get(self, task_id) -> Dict[str, Any]:
         """
         Get a task by ID.
         
         GET /api/Task/get?task_id=123
         """
         try:
+            # Convert to int and validate
+            try:
+                task_id = int(task_id)
+            except (ValueError, TypeError):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"task_id must be an integer, got {task_id}"
+                )
+            
+            # Validate task_id is positive
+            if task_id <= 0:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"task_id must be a positive integer, got {task_id}"
+                )
             task = self.service.get_task(task_id)
             if not task:
                 raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
             return task
+        except HTTPException:
+            raise
         except Exception as e:
             self._handle_error(e, "Failed to get task")
     
@@ -258,6 +275,7 @@ class TaskEntity(BaseEntity):
         Query params: project_id, task_status, start_date, end_date, etc.
         """
         try:
+            from fastapi.responses import Response
             filters = filters or {}
             # Get tasks with filters
             tasks = self.db.query_tasks(
@@ -269,7 +287,14 @@ class TaskEntity(BaseEntity):
             
             if format == "json":
                 import json
-                return json.dumps([dict(task) for task in tasks], indent=2)
+                # Return as dict with "tasks" key to match API expectations
+                tasks_data = {"tasks": [dict(task) for task in tasks]}
+                content = json.dumps(tasks_data, indent=2)
+                return Response(
+                    content=content,
+                    media_type="application/json",
+                    headers={"Content-Disposition": "attachment; filename=tasks.json"}
+                )
             elif format == "csv":
                 import csv
                 import io
@@ -279,9 +304,16 @@ class TaskEntity(BaseEntity):
                     writer.writeheader()
                     for task in tasks:
                         writer.writerow(dict(task))
-                return output.getvalue()
+                content = output.getvalue()
+                return Response(
+                    content=content,
+                    media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=tasks.csv"}
+                )
             else:
                 raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
+        except HTTPException:
+            raise
         except Exception as e:
             self._handle_error(e, "Failed to export tasks")
     
@@ -320,6 +352,62 @@ class TaskEntity(BaseEntity):
             return {"tasks": [dict(task) for task in tasks]}
         except Exception as e:
             self._handle_error(e, "Failed to get tasks approaching deadline")
+    
+    def activity_feed(self, task_id: Optional[int] = None, agent_id: Optional[str] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, limit: int = 1000) -> Dict[str, Any]:
+        """
+        Get activity feed showing all task updates, completions, and relationship changes.
+        
+        GET /api/Task/activity-feed?task_id=123&agent_id=agent-1&start_date=2024-01-01&end_date=2024-12-31&limit=100
+        """
+        try:
+            from datetime import datetime
+            # Validate date formats if provided
+            if start_date:
+                try:
+                    if start_date.endswith('Z'):
+                        datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                    else:
+                        datetime.fromisoformat(start_date)
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid start_date format '{start_date}'. Must be ISO 8601 format."
+                    )
+            
+            if end_date:
+                try:
+                    if end_date.endswith('Z'):
+                        datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                    else:
+                        datetime.fromisoformat(end_date)
+                except ValueError:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Invalid end_date format '{end_date}'. Must be ISO 8601 format."
+                    )
+            
+            feed = self.db.get_activity_feed(
+                task_id=task_id,
+                agent_id=agent_id,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit
+            )
+            return {
+                "feed": feed,
+                "count": len(feed),
+                "filters": {
+                    "task_id": task_id,
+                    "agent_id": agent_id,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "limit": limit
+                }
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            self._handle_error(e, "Failed to get activity feed")
     
     def get_stale(self, hours: Optional[int] = None) -> Dict[str, Any]:
         """
