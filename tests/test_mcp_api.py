@@ -357,6 +357,102 @@ def test_mcp_get_agent_performance(auth_client):
     assert stats["tasks_completed"] >= 3
 
 
+def test_mcp_get_task_statistics(auth_client):
+    """Test MCP get_task_statistics function."""
+    # Create some tasks with different statuses and types
+    task_ids = []
+    for i in range(5):
+        create_response = auth_client.post("/mcp/create_task", json={
+            "title": f"Statistics Test Task {i}",
+            "task_type": "concrete" if i % 2 == 0 else "abstract",
+            "task_instruction": "Do something",
+            "verification_instruction": "Verify it",
+            "agent_id": "test-agent"
+        })
+        task_id = create_response.json().get("task_id") or create_response.json().get("id")
+        task_ids.append(task_id)
+    
+    # Complete some tasks
+    for task_id in task_ids[:2]:
+        auth_client.post("/mcp/reserve_task", json={"task_id": task_id, "agent_id": "test-agent"})
+        auth_client.post("/mcp/complete_task", json={"task_id": task_id, "agent_id": "test-agent"})
+    
+    # Get statistics
+    response = auth_client.post("/mcp/sse", json={
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "tools/call",
+        "params": {
+            "name": "get_task_statistics",
+            "arguments": {}
+        }
+    })
+    assert response.status_code == 200
+    result = response.json()
+    
+    assert result["jsonrpc"] == "2.0"
+    assert result["id"] == 8
+    
+    # Parse and verify
+    import json
+    content_text = result["result"]["content"][0]["text"]
+    stats = json.loads(content_text)
+    assert stats["success"] is True
+    assert "total" in stats
+    assert stats["total"] >= 5
+    assert "by_status" in stats
+    assert "available" in stats["by_status"]
+    assert "complete" in stats["by_status"]
+    assert stats["by_status"]["complete"] >= 2
+    assert "by_type" in stats
+    assert "concrete" in stats["by_type"]
+    assert "abstract" in stats["by_type"]
+    assert "completion_rate" in stats
+    assert isinstance(stats["completion_rate"], (int, float))
+    assert stats["completion_rate"] >= 0
+
+
+def test_mcp_get_task_statistics_with_filters(auth_client):
+    """Test MCP get_task_statistics with filters."""
+    # Create tasks
+    create_response = auth_client.post("/mcp/create_task", json={
+        "title": "Filtered Statistics Test",
+        "task_type": "concrete",
+        "task_instruction": "Do something",
+        "verification_instruction": "Verify it",
+        "agent_id": "test-agent"
+    })
+    task_id = create_response.json().get("task_id") or create_response.json().get("id")
+    
+    # Get statistics filtered by task_type
+    response = auth_client.post("/mcp/sse", json={
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "tools/call",
+        "params": {
+            "name": "get_task_statistics",
+            "arguments": {
+                "task_type": "concrete"
+            }
+        }
+    })
+    assert response.status_code == 200
+    result = response.json()
+    
+    assert result["jsonrpc"] == "2.0"
+    
+    # Parse and verify
+    import json
+    content_text = result["result"]["content"][0]["text"]
+    stats = json.loads(content_text)
+    assert stats["success"] is True
+    assert "total" in stats
+    assert "by_type" in stats
+    assert stats["by_type"]["concrete"] >= 1
+    # When filtering by concrete, abstract count should be 0 or not included
+    assert stats["by_type"].get("abstract", 0) == 0
+
+
 # ============================================================================
 # MCP Protocol Tests - Critical for data integrity
 # ============================================================================

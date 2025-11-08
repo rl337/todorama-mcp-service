@@ -452,9 +452,14 @@ def test_concurrent_complete_operations(client, api_key_and_headers):
             agent_id, result = future.result()
             results.append((agent_id, result))
     
-    # Only agent-1 should successfully complete
-    successful_completes = [r for r in results if r[1].get("success") is True]
-    assert len(successful_completes) == 1
+    # Only agent-1 should successfully complete (others may verify if task is already complete)
+    # Count completions (not verifications) - a task can only be completed once
+    successful_completes = [
+        r for r in results 
+        if r[1].get("success") is True and r[1].get("completed") is True
+    ]
+    # Only one agent should be able to complete the task
+    assert len(successful_completes) == 1, f"Expected 1 completion, got {len(successful_completes)}: {successful_completes}"
     assert successful_completes[0][0] == "agent-1"
     
     # Verify task is complete

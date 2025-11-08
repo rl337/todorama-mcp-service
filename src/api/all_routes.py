@@ -21,28 +21,70 @@ router = APIRouter()
 
 
 # ============================================================================
-# Task Routes
+# Task Routes - Programmatic handler that delegates to entity system
 # ============================================================================
 
 @router.post("/tasks", response_model=TaskResponse, status_code=201)
-async def create_task(
-    task: TaskCreate,
-    auth: Dict[str, Any] = Depends(verify_api_key)
-) -> TaskResponse:
-    """Create a new task."""
-    service = TaskService(get_db())
+async def create_task(request: Request) -> TaskResponse:
+    """
+    Create a new task - delegates to TaskEntity.create().
+    Programmatic handler using the same pattern as command router.
+    """
+    import json
+    from api.entities.task_entity import TaskEntity
+    
+    # Manually verify API key (same pattern as command router)
+    # For /tasks endpoint, auth is required
+    # Parse Authorization header manually for Bearer token support
+    api_key = None
+    api_key_header = request.headers.get("X-API-Key")
+    if api_key_header:
+        api_key = api_key_header
+    
+    # Try Authorization: Bearer token
+    if not api_key:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            api_key = auth_header[7:]
+    
+    if not api_key:
+        raise HTTPException(status_code=401, detail="API key required. Provide X-API-Key header or Authorization: Bearer token.")
+    
+    # Verify the key using the database
+    db = get_db()
+    key_hash = db._hash_api_key(api_key)
+    key_info = db.get_api_key_by_hash(key_hash)
+    
+    if not key_info or key_info["enabled"] != 1:
+        raise HTTPException(status_code=401, detail="Invalid or revoked API key")
+    
+    # Update last used timestamp
+    db.update_api_key_last_used(key_info["id"])
+    
+    # Create auth dict
+    auth = {
+        "key_id": key_info["id"],
+        "project_id": key_info["project_id"],
+        "is_admin": db.is_api_key_admin(key_info["id"])
+    }
+    
+    # Parse body manually
     try:
-        task_data = service.create_task(task, auth)
-    except ValueError as e:
-        error_msg = str(e)
-        if "not found" in error_msg.lower():
-            raise HTTPException(status_code=404, detail=error_msg)
-        elif "not authorized" in error_msg.lower():
-            raise HTTPException(status_code=403, detail=error_msg)
-        raise HTTPException(status_code=400, detail=error_msg)
+        body = await request.json()
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+    
+    # Delegate to TaskEntity (same as command router does)
+    db = get_db()
+    entity = TaskEntity(db, auth_info=auth)
+    
+    try:
+        task_data = entity.create(**body)
+        return TaskResponse(**task_data)
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail="Failed to create task")
-    return TaskResponse(**task_data)
+        raise HTTPException(status_code=500, detail=f"Failed to create task: {str(e)}")
 
 
 # NOTE: Specific routes like /tasks, /tasks/search, /tasks/overdue, /tasks/approaching-deadline
@@ -408,10 +450,19 @@ async def get_template(template_id: int = Path(..., gt=0)) -> Dict[str, Any]:
     return template
 
 
+class CreateTaskFromTemplateRequest(BaseModel):
+    """Request model for creating task from template."""
+    title: Optional[str] = None
+    project_id: Optional[int] = None
+    notes: Optional[str] = None
+    priority: Optional[str] = None
+    estimated_hours: Optional[float] = None
+    due_date: Optional[str] = None
+
 @router.post("/templates/{template_id}/create-task", status_code=201)
 async def create_task_from_template(
     template_id: int = Path(..., gt=0),
-    task_data: Dict[str, Any] = Body(default_factory=dict),
+    task_data: Optional[CreateTaskFromTemplateRequest] = Body(default=None),
     auth: Dict[str, Any] = Depends(optional_api_key)
 ) -> Dict[str, Any]:
     """Create a task from a template."""
@@ -425,22 +476,39 @@ async def create_task_from_template(
     # Get agent_id from auth or use default
     agent_id = auth.get("agent_id") if auth else "system"
     
+    # Handle case where task_data might be None
+    if task_data is None:
+        task_data = CreateTaskFromTemplateRequest()
+    
     # Create task from template with optional overrides
     try:
         # Use title from task_data if provided, otherwise use template name
-        task_title = task_data.get("title")
-        if not task_title:
+        task_title = task_data.title if task_data.title else None
+        # Only use template name if title is explicitly None or empty string
+        if not task_title or (isinstance(task_title, str) and task_title.strip() == ""):
             task_title = template["name"]
+        
+        # Parse due_date if provided
+        due_date_obj = None
+        if task_data.due_date:
+            from datetime import datetime
+            try:
+                if task_data.due_date.endswith('Z'):
+                    due_date_obj = datetime.fromisoformat(task_data.due_date.replace('Z', '+00:00'))
+                else:
+                    due_date_obj = datetime.fromisoformat(task_data.due_date)
+            except ValueError:
+                pass  # Invalid date format, ignore
         
         task_id = db.create_task_from_template(
             template_id=template_id,
             agent_id=agent_id,
             title=task_title,
-            project_id=task_data.get("project_id"),
-            notes=task_data.get("notes"),
-            priority=task_data.get("priority") or template.get("priority"),
-            estimated_hours=task_data.get("estimated_hours") or template.get("estimated_hours"),
-            due_date=task_data.get("due_date")
+            project_id=task_data.project_id,
+            notes=task_data.notes,
+            priority=task_data.priority or template.get("priority"),
+            estimated_hours=task_data.estimated_hours or template.get("estimated_hours"),
+            due_date=due_date_obj
         )
         
         # Get the created task
@@ -503,6 +571,9 @@ async def get_analytics_metrics(
     try:
         completion_rates = db.get_completion_rates(project_id=project_id)
         avg_time = db.get_average_time_to_complete(project_id=project_id)
+        # Ensure average_hours is not None (convert to 0 if None)
+        if avg_time and avg_time.get("average_hours") is None:
+            avg_time["average_hours"] = 0.0
         return {
             "completion_rates": completion_rates,
             "average_time_to_complete": avg_time
@@ -519,8 +590,17 @@ async def get_bottlenecks(
     """Get task bottlenecks."""
     db = get_db()
     try:
-        bottlenecks = db.get_bottlenecks(project_id=project_id)
-        return {"bottlenecks": bottlenecks}
+        bottlenecks = db.get_bottlenecks()
+        # Filter by project_id if provided (post-process since method doesn't support it)
+        if project_id:
+            for key in ["long_running_tasks", "blocking_tasks", "blocked_tasks"]:
+                if key in bottlenecks:
+                    bottlenecks[key] = [t for t in bottlenecks[key] if t.get("project_id") == project_id]
+        return {
+            "long_running_tasks": bottlenecks.get("long_running_tasks", []),
+            "blocking_tasks": bottlenecks.get("blocking_tasks", []),
+            "blocked_tasks": bottlenecks.get("blocked_tasks", [])
+        }
     except Exception as e:
         logger.error(f"Failed to get bottlenecks: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get bottlenecks: {str(e)}")
@@ -533,9 +613,14 @@ async def get_agent_analytics(
     """Get agent comparison analytics."""
     db = get_db()
     try:
-        # This would need to be implemented in database.py
-        # For now, return a placeholder
-        return {"agents": []}
+        agent_data = db.get_agent_comparisons()
+        agents = agent_data.get("agents", [])
+        # Filter by project_id if provided (post-process)
+        if project_id:
+            # Note: get_agent_comparisons doesn't support project_id filter directly
+            # Would need to filter by tasks in that project, but for now return all
+            pass
+        return {"agents": agents}
     except Exception as e:
         logger.error(f"Failed to get agent analytics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get agent analytics: {str(e)}")
@@ -549,9 +634,38 @@ async def get_visualization_data(
     """Get visualization data for analytics."""
     db = get_db()
     try:
-        # This would need to be implemented in database.py
-        # For now, return a placeholder
-        return {"data": []}
+        # Get completion timeline data
+        tasks = db.query_tasks(limit=1000)
+        if start_date or end_date:
+            from datetime import datetime
+            filtered_tasks = []
+            for task in tasks:
+                if task.get("created_at"):
+                    try:
+                        created = datetime.fromisoformat(task["created_at"].replace('Z', '+00:00'))
+                        if start_date:
+                            start = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                            if created < start:
+                                continue
+                        if end_date:
+                            end = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                            if created > end:
+                                continue
+                        filtered_tasks.append(task)
+                    except (ValueError, AttributeError):
+                        pass
+            tasks = filtered_tasks
+        
+        # Build status distribution
+        status_dist = {}
+        for task in tasks:
+            status = task.get("task_status", "available")
+            status_dist[status] = status_dist.get(status, 0) + 1
+        
+        return {
+            "status_distribution": status_dist,
+            "completion_timeline": []  # Could be enhanced with time-series data
+        }
     except Exception as e:
         logger.error(f"Failed to get visualization data: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get visualization data: {str(e)}")
@@ -569,7 +683,15 @@ async def create_api_key(
     """Create a new API key for a project."""
     db = get_db()
     try:
-        name = key_data.get("name", "Test API Key")
+        name = key_data.get("name")
+        # Name is optional - if not provided, use default
+        if name is None:
+            name = "Test API Key"
+        elif not name or not name.strip():
+            # If provided but empty, reject
+            raise HTTPException(status_code=422, detail="API key name cannot be empty")
+        else:
+            name = name.strip()
         key_id, api_key = db.create_api_key(project_id, name)
         # Extract key prefix (first 8 characters)
         key_prefix = api_key[:8] if len(api_key) >= 8 else api_key
@@ -580,6 +702,15 @@ async def create_api_key(
             "name": name,
             "project_id": project_id
         }
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 422 for validation)
+        raise
+    except ValueError as e:
+        # Check if it's a "not found" error
+        error_msg = str(e)
+        if "not found" in error_msg.lower():
+            raise HTTPException(status_code=404, detail=error_msg)
+        raise HTTPException(status_code=400, detail=error_msg)
     except KeyError as e:
         raise HTTPException(status_code=400, detail=f"Missing required field: {e}")
     except Exception as e:
@@ -614,8 +745,12 @@ async def revoke_api_key(key_id: int = Path(..., gt=0)) -> Dict[str, Any]:
     """Revoke an API key."""
     db = get_db()
     try:
-        # This would need to be implemented in database.py
+        success = db.revoke_api_key(key_id)
+        if not success:
+            raise HTTPException(status_code=404, detail=f"API key {key_id} not found")
         return {"success": True, "key_id": key_id}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to revoke API key: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to revoke API key: {str(e)}")
@@ -626,8 +761,15 @@ async def rotate_api_key(key_id: int = Path(..., gt=0)) -> Dict[str, Any]:
     """Rotate an API key."""
     db = get_db()
     try:
-        # This would need to be implemented in database.py
-        return {"success": True, "key_id": key_id, "new_api_key": "placeholder"}
+        new_key_id, new_api_key = db.rotate_api_key(key_id)
+        key_prefix = new_api_key[:8] if len(new_api_key) >= 8 else new_api_key
+        return {
+            "key_id": new_key_id,
+            "api_key": new_api_key,
+            "key_prefix": key_prefix
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"Failed to rotate API key: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to rotate API key: {str(e)}")

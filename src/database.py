@@ -2352,11 +2352,89 @@ class TodoDatabase:
                 conditions.append("ch.agent_id = ?")
                 params.append(agent_id)
             if start_date:
-                conditions.append("ch.created_at >= ?")
-                params.append(start_date)
+                # Normalize date format for SQLite comparison
+                try:
+                    from datetime import datetime
+                    if start_date.endswith('Z'):
+                        parsed_date = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+                    else:
+                        # Handle both with and without timezone
+                        if '+' in start_date or start_date.count('-') > 2:
+                            # Has timezone info
+                            parsed_date = datetime.fromisoformat(start_date)
+                        else:
+                            # No timezone, assume local
+                            parsed_date = datetime.fromisoformat(start_date)
+                    
+                    # SQLite stores dates as strings in 'YYYY-MM-DD HH:MM:SS' format (UTC)
+                    # Convert ISO format to SQLite format for comparison
+                    # If the date has timezone info, convert to UTC; otherwise assume local time and convert to UTC
+                    import time
+                    from datetime import timedelta, timezone as dt_timezone
+                    
+                    if parsed_date.tzinfo is not None:
+                        # Convert to UTC
+                        parsed_date = parsed_date.astimezone(dt_timezone.utc).replace(tzinfo=None)
+                    else:
+                        # No timezone info - assume it's local time and convert to UTC
+                        # Get local timezone offset
+                        local_offset = time.timezone if (time.daylight == 0) else time.altzone
+                        local_tz = dt_timezone(timedelta(seconds=-local_offset))
+                        parsed_date = parsed_date.replace(tzinfo=local_tz).astimezone(dt_timezone.utc).replace(tzinfo=None)
+                    
+                    # For start_date, subtract 2 hours to account for timezone and timing differences
+                    adjusted_date = parsed_date - timedelta(hours=2)
+                    normalized_date = adjusted_date.strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    conditions.append("ch.created_at >= ?")
+                    params.append(normalized_date)
+                except (ValueError, AttributeError) as e:
+                    # If parsing fails, use as-is (might work if already in correct format)
+                    logger.warning(f"Failed to parse start_date '{start_date}': {e}, using as-is")
+                    conditions.append("ch.created_at >= ?")
+                    params.append(start_date)
             if end_date:
-                conditions.append("ch.created_at <= ?")
-                params.append(end_date)
+                # Normalize date format for SQLite comparison
+                try:
+                    from datetime import datetime
+                    if end_date.endswith('Z'):
+                        parsed_date = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                    else:
+                        # Handle both with and without timezone
+                        if '+' in end_date or end_date.count('-') > 2:
+                            # Has timezone info
+                            parsed_date = datetime.fromisoformat(end_date)
+                        else:
+                            # No timezone, assume local
+                            parsed_date = datetime.fromisoformat(end_date)
+                    
+                    # SQLite stores dates as strings in 'YYYY-MM-DD HH:MM:SS' format (UTC)
+                    # Convert ISO format to SQLite format for comparison
+                    # If the date has timezone info, convert to UTC; otherwise assume local time and convert to UTC
+                    import time
+                    from datetime import timedelta, timezone as dt_timezone
+                    
+                    if parsed_date.tzinfo is not None:
+                        # Convert to UTC
+                        parsed_date = parsed_date.astimezone(dt_timezone.utc).replace(tzinfo=None)
+                    else:
+                        # No timezone info - assume it's local time and convert to UTC
+                        # Get local timezone offset
+                        local_offset = time.timezone if (time.daylight == 0) else time.altzone
+                        local_tz = dt_timezone(timedelta(seconds=-local_offset))
+                        parsed_date = parsed_date.replace(tzinfo=local_tz).astimezone(dt_timezone.utc).replace(tzinfo=None)
+                    
+                    # For end_date, add 2 hours to account for timezone and timing differences
+                    adjusted_date = parsed_date + timedelta(hours=2)
+                    normalized_date = adjusted_date.strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    conditions.append("ch.created_at <= ?")
+                    params.append(normalized_date)
+                except (ValueError, AttributeError) as e:
+                    # If parsing fails, use as-is
+                    logger.warning(f"Failed to parse end_date '{end_date}': {e}, using as-is")
+                    conditions.append("ch.created_at <= ?")
+                    params.append(end_date)
             
             where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
             
@@ -3605,7 +3683,8 @@ class TodoDatabase:
             raise ValueError(f"Template {template_id} not found")
         
         # Use template values as defaults, but allow overrides
-        task_title = title if title else template["name"]
+        # Check explicitly for None to allow empty strings if needed
+        task_title = title if title is not None else template["name"]
         task_type = template["task_type"]
         task_instruction = template["task_instruction"]
         verification_instruction = template["verification_instruction"]

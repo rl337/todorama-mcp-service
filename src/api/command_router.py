@@ -142,13 +142,30 @@ async def entity_command(
             entity = entity_class(db, auth_info=auth)
         
         # Handle actions with sub-paths like "export/json", "import/json", "bulk/complete"
+        # Also handle path parameters like "{task_id}/relationships"
         # Extract sub-path parts from action if it contains a slash
         actual_action = action
         sub_path = None
+        path_param = None
+        
         if "/" in action:
             parts = action.split("/", 1)
             actual_action = parts[0]
             sub_path = parts[1] if len(parts) > 1 else None
+            
+            # Check if actual_action is a numeric ID (path parameter)
+            # Pattern: /api/Task/{task_id}/relationships -> action="123/relationships"
+            try:
+                path_param = int(actual_action)
+                # If it's a number, treat it as a path parameter and use sub_path as the action
+                if sub_path:
+                    # For GET requests, try "get_{sub_path}" first, then just sub_path
+                    # For POST/PATCH, use sub_path directly
+                    actual_action = sub_path.replace("-", "_")
+                    sub_path = None  # Clear sub_path since we're using it as the action
+            except (ValueError, TypeError):
+                # Not a number, treat as normal action
+                pass
         
         # Special handling for actions with sub-paths that map to specific methods
         # For import/json -> import_json, bulk/complete -> bulk_complete, etc.
@@ -175,20 +192,34 @@ async def entity_command(
                     detail=f"Bulk action '{sub_path}' not found on entity '{entity_name}'"
                 )
         else:
-            # Convert hyphens to underscores for method names (e.g., "approaching-deadline" -> "approaching_deadline")
-            method_name = actual_action.replace("-", "_")
-            
-            # Get action method - try both with and without underscore conversion
-            if hasattr(entity, method_name):
-                action_method = getattr(entity, method_name)
-                actual_action = method_name  # Use the method name for routing logic
-            elif hasattr(entity, actual_action):
-                action_method = getattr(entity, actual_action)
+            # If we detected a path parameter, try to find the method now
+            if path_param is not None:
+                # Try "get_{action}" first for GET requests, then just "{action}"
+                get_method_name = f"get_{actual_action}"
+                if hasattr(entity, get_method_name):
+                    action_method = getattr(entity, get_method_name)
+                elif hasattr(entity, actual_action):
+                    action_method = getattr(entity, actual_action)
+                else:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Action '{actual_action}' not found for path parameter '{path_param}' on entity '{entity_name}'"
+                    )
             else:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Action '{action}' not found on entity '{entity_name}'. Available actions: {[m for m in dir(entity) if not m.startswith('_') and callable(getattr(entity, m))]}"
-                )
+                # Convert hyphens to underscores for method names (e.g., "approaching-deadline" -> "approaching_deadline")
+                method_name = actual_action.replace("-", "_")
+                
+                # Get action method - try both with and without underscore conversion
+                if hasattr(entity, method_name):
+                    action_method = getattr(entity, method_name)
+                    actual_action = method_name  # Use the method name for routing logic
+                elif hasattr(entity, actual_action):
+                    action_method = getattr(entity, actual_action)
+                else:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Action '{action}' not found on entity '{entity_name}'. Available actions: {[m for m in dir(entity) if not m.startswith('_') and callable(getattr(entity, m))]}"
+                    )
         
         # Parse request body for POST/PATCH or query params for GET
         # This must be outside the else block so it executes for import/bulk actions too
@@ -273,8 +304,23 @@ async def entity_command(
                 bulk_method = getattr(entity, bulk_method_name)
                 result = bulk_method(**body)
             elif action_method:
-                # Call method with body as kwargs
-                result = action_method(**body)
+                # If we have a path parameter (like task_id from /api/Task/1/relationships)
+                # pass it as the first argument to the method
+                if path_param is not None:
+                    # Check method signature to see if it accepts task_id as first param
+                    import inspect
+                    sig = inspect.signature(action_method)
+                    params = list(sig.parameters.keys())
+                    if params and params[0] not in ['self', 'kwargs']:
+                        # Method expects a positional parameter, pass path_param
+                        result = action_method(path_param, **body)
+                    else:
+                        # Method expects it in kwargs, add to body
+                        body['task_id'] = path_param
+                        result = action_method(**body)
+                else:
+                    # Call method with body as kwargs
+                    result = action_method(**body)
             else:
                 raise HTTPException(
                     status_code=404,
@@ -283,6 +329,7 @@ async def entity_command(
         else:
             # GET request - use query params
             query_params = dict(request.query_params)
+            
             # Convert single values to appropriate types
             params = {}
             for key, value in query_params.items():
@@ -296,6 +343,22 @@ async def entity_command(
                         params[key] = value
                 except:
                     params[key] = value
+            
+            # If we have a path parameter (like task_id from /api/Task/1/relationships)
+            # pass it to the method and return early
+            if path_param is not None and action_method:
+                import inspect
+                sig = inspect.signature(action_method)
+                method_params = list(sig.parameters.keys())
+                if method_params and method_params[0] not in ['self', 'kwargs']:
+                    # Method expects a positional parameter, pass path_param
+                    result = action_method(path_param)
+                    return response_context.render_success(result)
+                else:
+                    # Method expects it in query params, add it
+                    params['task_id'] = path_param
+                    result = action_method(**params)
+                    return response_context.render_success(result)
             
             # For GET, pass params as filters or direct args
             # If action is 'list', wrap in filters dict

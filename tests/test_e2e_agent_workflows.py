@@ -193,23 +193,27 @@ class TestAgentTaskManagement:
     def test_agent_queries_available_tasks(self):
         """Test agent querying for available tasks by type."""
         # Create tasks of different types
-        concrete_id = client.post("/mcp/create_task", json={
+        concrete_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Concrete task",
             "task_type": "concrete",
             "task_instruction": "Do something",
             "verification_instruction": "It's done",
             "agent_id": AGENT_ID,
             "project_id": 1
-        }).json()["task_id"]
+        })
+        assert concrete_response.status_code == 200
+        concrete_id = concrete_response.json()["task_id"]
         
-        abstract_id = client.post("/mcp/create_task", json={
+        abstract_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Abstract task",
             "task_type": "abstract",
             "task_instruction": "Plan something",
             "verification_instruction": "Plan is complete",
             "agent_id": AGENT_ID,
             "project_id": 1
-        }).json()["task_id"]
+        })
+        assert abstract_response.status_code == 200
+        abstract_id = abstract_response.json()["task_id"]
         
         # Query for concrete tasks only
         response = client.post("/mcp/query_tasks", json={
@@ -227,14 +231,16 @@ class TestAgentTaskManagement:
     def test_agent_handles_stale_task_pickup(self):
         """Test agent picking up a stale task (previously abandoned)."""
         # Create and reserve a task
-        task_id = client.post("/mcp/create_task", json={
+        create_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Stale task test",
             "task_type": "concrete",
             "task_instruction": "Do something",
             "verification_instruction": "It's done",
             "agent_id": OTHER_AGENT_ID,
             "project_id": 1
-        }).json()["task_id"]
+        })
+        assert create_response.status_code == 200
+        task_id = create_response.json()["task_id"]
         
         client.post("/mcp/reserve_task", json={
             "task_id": task_id,
@@ -257,14 +263,16 @@ class TestAgentTaskManagement:
     def test_agent_continues_own_task(self):
         """Test agent continuing a task it previously started."""
         # Create and reserve task
-        task_id = client.post("/mcp/create_task", json={
+        create_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Continue own task",
             "task_type": "concrete",
             "task_instruction": "Do something",
             "verification_instruction": "It's done",
             "agent_id": AGENT_ID,
             "project_id": 1
-        }).json()["task_id"]
+        })
+        assert create_response.status_code == 200
+        task_id = create_response.json()["task_id"]
         
         client.post("/mcp/reserve_task", json={
             "task_id": task_id,
@@ -339,14 +347,16 @@ class TestAgentErrorHandling:
     def test_agent_unlock_on_error(self):
         """Test agent unlocking task when encountering error."""
         # Reserve a task
-        task_id = client.post("/mcp/create_task", json={
+        create_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Unlock on error",
             "task_type": "concrete",
             "task_instruction": "Do something",
             "verification_instruction": "It's done",
             "agent_id": AGENT_ID,
             "project_id": 1
-        }).json()["task_id"]
+        })
+        assert create_response.status_code == 200
+        task_id = create_response.json()["task_id"]
         
         client.post("/mcp/reserve_task", json={
             "task_id": task_id,
@@ -376,17 +386,19 @@ class TestAgentTaskCreation:
     def test_agent_creates_subtasks(self):
         """Test agent breaking down a task into subtasks."""
         # Create parent task
-        parent_id = client.post("/mcp/create_task", json={
+        parent_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Parent task",
             "task_type": "epic",
             "task_instruction": "Build a feature",
             "verification_instruction": "Feature is complete",
             "agent_id": AGENT_ID,
             "project_id": 1
-        }).json()["task_id"]
+        })
+        assert parent_response.status_code == 200
+        parent_id = parent_response.json()["task_id"]
         
         # Create subtasks
-        subtask1_id = client.post("/mcp/create_task", json={
+        subtask1_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Subtask 1",
             "task_type": "concrete",
             "task_instruction": "Implement part 1",
@@ -395,9 +407,11 @@ class TestAgentTaskCreation:
             "project_id": 1,
             "parent_task_id": parent_id,
             "relationship_type": "subtask"
-        }).json()["task_id"]
+        })
+        assert subtask1_response.status_code == 200
+        subtask1_id = subtask1_response.json()["task_id"]
         
-        subtask2_id = client.post("/mcp/create_task", json={
+        subtask2_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Subtask 2",
             "task_type": "concrete",
             "task_instruction": "Implement part 2",
@@ -406,7 +420,9 @@ class TestAgentTaskCreation:
             "project_id": 1,
             "parent_task_id": parent_id,
             "relationship_type": "subtask"
-        }).json()["task_id"]
+        })
+        assert subtask2_response.status_code == 200
+        subtask2_id = subtask2_response.json()["task_id"]
         
         # Get parent context - should show relationships
         context_response = client.post("/mcp/get_task_context", json={
@@ -419,17 +435,19 @@ class TestAgentTaskCreation:
     def test_agent_creates_related_task(self):
         """Test agent creating a related task (good idea)."""
         # Create original task
-        original_id = client.post("/mcp/create_task", json={
+        original_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Original task",
             "task_type": "concrete",
             "task_instruction": "Fix bug",
             "verification_instruction": "Bug is fixed",
             "agent_id": AGENT_ID,
             "project_id": 1
-        }).json()["task_id"]
+        })
+        assert original_response.status_code == 200
+        original_id = original_response.json()["task_id"]
         
         # Create related task for improvement
-        related_id = client.post("/mcp/create_task", json={
+        related_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Related improvement",
             "task_type": "concrete",
             "task_instruction": "Add test coverage",
@@ -438,7 +456,9 @@ class TestAgentTaskCreation:
             "project_id": 1,
             "parent_task_id": original_id,
             "relationship_type": "related"
-        }).json()["task_id"]
+        })
+        assert related_response.status_code == 200
+        related_id = related_response.json()["task_id"]
         
         assert related_id != original_id
 
@@ -449,14 +469,16 @@ class TestAgentVerificationWorkflow:
     def test_agent_handles_needs_verification_tasks(self):
         """Test agent picking up tasks that need verification."""
         # Create and complete a task (unverified)
-        task_id = client.post("/mcp/create_task", json={
+        create_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Needs verification",
             "task_type": "concrete",
             "task_instruction": "Do something",
             "verification_instruction": "Verify it works",
             "agent_id": AGENT_ID,
             "project_id": 1
-        }).json()["task_id"]
+        })
+        assert create_response.status_code == 200
+        task_id = create_response.json()["task_id"]
         
         # Reserve, work, complete
         client.post("/mcp/reserve_task", json={
@@ -495,14 +517,16 @@ class TestAgentVerificationWorkflow:
     def test_agent_handles_failed_verification(self):
         """Test agent handling verification failure by creating followup."""
         # Create task
-        task_id = client.post("/mcp/create_task", json={
+        create_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Failed verification",
             "task_type": "concrete",
             "task_instruction": "Do something",
             "verification_instruction": "Verify it works correctly",
             "agent_id": AGENT_ID,
             "project_id": 1
-        }).json()["task_id"]
+        })
+        assert create_response.status_code == 200
+        task_id = create_response.json()["task_id"]
         
         # Complete it
         client.post("/mcp/reserve_task", json={
@@ -550,14 +574,16 @@ class TestAgentCommentsAndUpdates:
     
     def test_agent_adds_progress_updates(self):
         """Test agent adding various update types."""
-        task_id = client.post("/mcp/create_task", json={
+        create_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Update types",
             "task_type": "concrete",
             "task_instruction": "Do something",
             "verification_instruction": "It's done",
             "agent_id": AGENT_ID,
             "project_id": 1
-        }).json()["task_id"]
+        })
+        assert create_response.status_code == 200
+        task_id = create_response.json()["task_id"]
         
         # Progress update
         client.post("/mcp/add_task_update", json={
@@ -596,14 +622,16 @@ class TestAgentCommentsAndUpdates:
     
     def test_agent_creates_comments(self):
         """Test agent creating comments on tasks."""
-        task_id = client.post("/mcp/create_task", json={
+        create_response = client.post("/mcp/create_task", json={
             "title": "[E2E TEST] Comments",
             "task_type": "concrete",
             "task_instruction": "Do something",
             "verification_instruction": "It's done",
             "agent_id": AGENT_ID,
             "project_id": 1
-        }).json()["task_id"]
+        })
+        assert create_response.status_code == 200
+        task_id = create_response.json()["task_id"]
         
         # Create comment
         comment_response = client.post("/mcp/create_comment", json={
@@ -635,7 +663,7 @@ class TestAgentBulkOperations:
         # Create multiple tasks
         task_ids = []
         for i in range(5):
-            task_id = client.post("/mcp/create_task", json={
+            create_response = client.post("/mcp/create_task", json={
                 "title": f"[E2E TEST] Bulk query task {i}",
                 "task_type": "concrete",
                 "task_instruction": f"Task {i}",
@@ -643,7 +671,9 @@ class TestAgentBulkOperations:
                 "agent_id": AGENT_ID,
                 "project_id": 1,
                 "priority": "high" if i < 2 else "medium"
-            }).json()["task_id"]
+            })
+            assert create_response.status_code == 200
+            task_id = create_response.json()["task_id"]
             task_ids.append(task_id)
         
         # Query with filters

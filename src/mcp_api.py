@@ -3170,6 +3170,12 @@ def handle_jsonrpc_request(request: Dict[str, Any]) -> Dict[str, Any]:
             ),
             "query_stale_tasks": lambda: MCPTodoAPI.query_stale_tasks(
                 arguments.get("hours")
+            ),
+            "get_task_statistics": lambda: MCPTodoAPI.get_task_statistics(
+                project_id=arguments.get("project_id"),
+                task_type=arguments.get("task_type"),
+                start_date=arguments.get("start_date"),
+                end_date=arguments.get("end_date")
             )
         }
         
