@@ -33,62 +33,62 @@ from models import RelationshipCreate
 # Import service container (handles all initialization)
 from dependencies.services import get_services
 
-# Setup structured logging (must be done before creating logger)
-log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 
-# Add request ID filter for structured logging (must be before basicConfig)
-class RequestIDFilter(logging.Filter):
-    """Filter to add request ID to log records."""
-    def filter(self, record):
-        # Always set request_id to avoid KeyError in format string
-        try:
-            req_id = get_request_id() if callable(get_request_id) else (get_request_id or '-')
-        except:
-            req_id = '-'
-        record.request_id = req_id
-        return True
+def setup_logging():
+    """Setup structured logging with request ID support."""
+    # Add request ID filter for structured logging (must be before basicConfig)
+    class RequestIDFilter(logging.Filter):
+        """Filter to add request ID to log records."""
+        def filter(self, record):
+            # Always set request_id to avoid KeyError in format string
+            try:
+                req_id = get_request_id() if callable(get_request_id) else (get_request_id or '-')
+            except:
+                req_id = '-'
+            record.request_id = req_id
+            return True
 
-# Apply filter FIRST, then configure logging
-logging.getLogger().addFilter(RequestIDFilter())
+    # Apply filter FIRST, then configure logging
+    logging.getLogger().addFilter(RequestIDFilter())
 
-# Use a custom formatter that safely handles request_id
-class SafeFormatter(logging.Formatter):
-    def format(self, record):
-        if not hasattr(record, 'request_id'):
-            record.request_id = '-'
-        return super().format(record)
+    # Use a custom formatter that safely handles request_id
+    class SafeFormatter(logging.Formatter):
+        def format(self, record):
+            if not hasattr(record, 'request_id'):
+                record.request_id = '-'
+            return super().format(record)
 
-handler = logging.StreamHandler()
-handler.setFormatter(SafeFormatter('%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
-logging.basicConfig(
-    level=getattr(logging, log_level),
-    handlers=[handler],
-    force=True
-)
-
-logger = logging.getLogger(__name__)
-
-
-# Global shutdown event
-shutdown_event = asyncio.Event()
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    handler = logging.StreamHandler()
+    handler.setFormatter(SafeFormatter('%(asctime)s - %(name)s - %(levelname)s - [%(request_id)s] - %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
+    logging.basicConfig(
+        level=getattr(logging, log_level),
+        handlers=[handler],
+        force=True
+    )
 
 
-def signal_handler(signum, frame):
-    """Handle shutdown signals gracefully."""
-    logger.info(f"Received signal {signum}, initiating graceful shutdown...")
-    shutdown_event.set()
-    # Stop backup schedulers
-    services = get_services()
-    services.backup_scheduler.stop()
-    if services.conversation_backup_scheduler:
-        services.conversation_backup_scheduler.stop()
-    logger.info("Graceful shutdown complete")
+def create_signal_handler(shutdown_event: asyncio.Event):
+    """Create a signal handler function that uses the provided shutdown event."""
+    def signal_handler(signum, frame):
+        """Handle shutdown signals gracefully."""
+        logger = logging.getLogger(__name__)
+        logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+        shutdown_event.set()
+        # Stop backup schedulers
+        services = get_services()
+        services.backup_scheduler.stop()
+        if services.conversation_backup_scheduler:
+            services.conversation_backup_scheduler.stop()
+        logger.info("Graceful shutdown complete")
+    return signal_handler
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifespan with graceful shutdown."""
     # Startup
+    logger = logging.getLogger(__name__)
     logger.info("Application starting up...")
     
     # Initialize services (database, backup, etc.)
@@ -158,12 +158,20 @@ def create_app() -> FastAPI:
     Returns:
         Configured FastAPI app instance ready to run.
     """
+    # Setup logging first (must be done before creating logger)
+    setup_logging()
+    logger = logging.getLogger(__name__)
+    
+    # Create shutdown event for signal handling
+    shutdown_event = asyncio.Event()
+    
     # Register signal handlers for graceful shutdown
     # Only register in main thread (signal.signal only works in main thread)
     if threading.current_thread() is threading.main_thread():
         try:
-            signal.signal(signal.SIGTERM, signal_handler)
-            signal.signal(signal.SIGINT, signal_handler)
+            signal_handler_func = create_signal_handler(shutdown_event)
+            signal.signal(signal.SIGTERM, signal_handler_func)
+            signal.signal(signal.SIGINT, signal_handler_func)
         except ValueError:
             # Signal handlers may not be available in all contexts (e.g., tests)
             pass
@@ -184,10 +192,10 @@ def create_app() -> FastAPI:
     
     # Register command pattern router (minimal FastAPI usage)
     # All API routes are now under /api/<Entity>/<action>
+    # Include all_routes FIRST so specific routes like /api/Task/import/json are handled before command router
+    app.include_router(all_routes_router)
     app.include_router(command_router)
     app.include_router(mcp_router)
-    # Include all_routes for traditional REST endpoints (/tasks, /projects, etc.)
-    app.include_router(all_routes_router)
     
     # Add GraphQL router
     graphql_app = GraphQLRouter(schema)
@@ -240,23 +248,65 @@ def create_app() -> FastAPI:
             
             # RelationshipCreate model already validates relationship_type and parent != child
             services = get_services()
-            rel_id = services.db.create_relationship(
-                parent_task_id=relationship.parent_task_id,
-                child_task_id=relationship.child_task_id,
-                relationship_type=relationship.relationship_type,
-                agent_id=agent_id
-            )
-            return {
-                "relationship_id": rel_id,
-                "parent_task_id": relationship.parent_task_id,
-                "child_task_id": relationship.child_task_id,
-                "relationship_type": relationship.relationship_type
-            }
+            try:
+                rel_id = services.db.create_relationship(
+                    parent_task_id=relationship.parent_task_id,
+                    child_task_id=relationship.child_task_id,
+                    relationship_type=relationship.relationship_type,
+                    agent_id=agent_id
+                )
+                return {
+                    "relationship_id": rel_id,
+                    "parent_task_id": relationship.parent_task_id,
+                    "child_task_id": relationship.child_task_id,
+                    "relationship_type": relationship.relationship_type
+                }
+            except ValueError as e:
+                # Handle circular dependency and other validation errors
+                error_msg = str(e)
+                if "circular" in error_msg.lower() or "dependency" in error_msg.lower():
+                    raise HTTPException(status_code=400, detail=error_msg)
+                else:
+                    raise HTTPException(status_code=400, detail=error_msg)
         except HTTPException:
             raise
         except ValueError as e:
-            # Handle validation errors from database (circular dependencies, etc.)
+            # Handle validation errors from database
+            error_msg = str(e).lower()
+            # Circular dependencies should return 400 (bad request), not 422 (validation error)
+            if "circular" in error_msg or "dependency" in error_msg:
+                raise HTTPException(status_code=400, detail=str(e))
+            # Other validation errors return 422
             raise HTTPException(status_code=422, detail=str(e))
+        except sqlite3.IntegrityError as e:
+            # Handle other integrity errors (shouldn't happen for relationships now since we check first)
+            error_msg = str(e).lower()
+            if "unique constraint" in error_msg and "task_relationships" in error_msg:
+                # This shouldn't happen now since we check first, but handle gracefully
+                # Try to get existing relationship ID
+                try:
+                    services = get_services()
+                    cursor = services.db._get_connection().cursor()
+                    cursor.execute("""
+                        SELECT id FROM task_relationships
+                        WHERE parent_task_id = ? AND child_task_id = ? AND relationship_type = ?
+                    """, (relationship.parent_task_id, relationship.child_task_id, relationship.relationship_type))
+                    existing = cursor.fetchone()
+                    if existing:
+                        return {
+                            "relationship_id": existing[0],
+                            "parent_task_id": relationship.parent_task_id,
+                            "child_task_id": relationship.child_task_id,
+                            "relationship_type": relationship.relationship_type
+                        }
+                except Exception:
+                    pass
+                raise HTTPException(
+                    status_code=409,  # Conflict - relationship already exists
+                    detail=f"Relationship already exists between task {relationship.parent_task_id} and task {relationship.child_task_id} with type {relationship.relationship_type}"
+                )
+            logger.error(f"Database integrity error: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail="Failed to create relationship")
         except Exception as e:
             logger.error(f"Failed to create relationship: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail="Failed to create relationship")

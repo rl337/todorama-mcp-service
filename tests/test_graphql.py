@@ -69,6 +69,50 @@ def client(temp_db):
     return TestClient(app)
 
 
+@pytest.fixture
+def auth_client(client, temp_db):
+    """Create authenticated test client with API key."""
+    db, _, _ = temp_db
+    
+    # Create a project and API key for authentication
+    project_id = db.create_project("Test Project", "/test/path")
+    key_id, api_key = db.create_api_key(project_id, "Test API Key")
+    
+    # Create a client wrapper that adds auth headers
+    class AuthenticatedClient:
+        def __init__(self, client, api_key):
+            self.client = client
+            self.headers = {"X-API-Key": api_key}
+            self.project_id = project_id
+            self.api_key = api_key
+        
+        def get(self, url, **kwargs):
+            if "headers" not in kwargs:
+                kwargs["headers"] = {}
+            kwargs["headers"].update(self.headers)
+            return self.client.get(url, **kwargs)
+        
+        def post(self, url, **kwargs):
+            if "headers" not in kwargs:
+                kwargs["headers"] = {}
+            kwargs["headers"].update(self.headers)
+            return self.client.post(url, **kwargs)
+        
+        def put(self, url, **kwargs):
+            if "headers" not in kwargs:
+                kwargs["headers"] = {}
+            kwargs["headers"].update(self.headers)
+            return self.client.put(url, **kwargs)
+        
+        def delete(self, url, **kwargs):
+            if "headers" not in kwargs:
+                kwargs["headers"] = {}
+            kwargs["headers"].update(self.headers)
+            return self.client.delete(url, **kwargs)
+    
+    return AuthenticatedClient(client, api_key)
+
+
 def test_graphql_query_project(client):
     """Test GraphQL query for a single project."""
     # Create a project via REST API
@@ -137,16 +181,21 @@ def test_graphql_query_projects(client):
     assert "project-2" in names
 
 
-def test_graphql_query_task(client):
+def test_graphql_query_task(auth_client, client):
     """Test GraphQL query for a single task."""
     # Create a task via REST API
-    response = client.post("/tasks", json={
+    # Use /api/Task/create endpoint (same as other tests)
+    response = auth_client.post("/api/Task/create", json={
         "title": "GraphQL Test Task",
         "task_type": "concrete",
         "task_instruction": "Do something",
         "verification_instruction": "Verify it works",
-        "agent_id": "test-agent"
+        "agent_id": "test-agent",
+        "project_id": auth_client.project_id
     })
+    if response.status_code != 201:
+        print(f"Response status: {response.status_code}")
+        print(f"Response body: {response.json()}")
     assert response.status_code == 201
     task_data = response.json()
     task_id = task_data["id"]
@@ -175,16 +224,17 @@ def test_graphql_query_task(client):
     assert data["data"]["task"]["priority"] == "medium"
 
 
-def test_graphql_query_tasks_with_filter(client):
+def test_graphql_query_tasks_with_filter(auth_client, client):
     """Test GraphQL query for tasks with filtering."""
     # Create tasks with different types
     for task_type in ["concrete", "abstract", "epic"]:
-        response = client.post("/tasks", json={
+        response = auth_client.post("/api/Task/create", json={
             "title": f"{task_type} Task",
             "task_type": task_type,
             "task_instruction": "Do something",
             "verification_instruction": "Verify",
-            "agent_id": "test-agent"
+            "agent_id": "test-agent",
+            "project_id": auth_client.project_id
         })
         assert response.status_code == 201
     
@@ -215,16 +265,17 @@ def test_graphql_query_tasks_with_filter(client):
         assert task["taskType"] == "concrete"
 
 
-def test_graphql_query_tasks_with_pagination(client):
+def test_graphql_query_tasks_with_pagination(auth_client, client):
     """Test GraphQL query for tasks with pagination."""
     # Create multiple tasks
     for i in range(5):
-        response = client.post("/tasks", json={
+        response = auth_client.post("/api/Task/create", json={
             "title": f"Task {i}",
             "task_type": "concrete",
             "task_instruction": "Do something",
             "verification_instruction": "Verify",
-            "agent_id": "test-agent"
+            "agent_id": "test-agent",
+            "project_id": auth_client.project_id
         })
         assert response.status_code == 201
     
@@ -254,24 +305,25 @@ def test_graphql_query_tasks_with_pagination(client):
     assert data["data"]["tasks"]["pageInfo"]["hasMore"] is True
 
 
-def test_graphql_query_tasks_matches_rest_api(client):
+def test_graphql_query_tasks_matches_rest_api(auth_client, client):
     """Test that GraphQL query results match REST API results."""
     # Create tasks via REST API
     task_ids = []
     for i in range(3):
-        response = client.post("/tasks", json={
+        response = auth_client.post("/api/Task/create", json={
             "title": f"Matching Test Task {i}",
             "task_type": "concrete",
             "task_instruction": "Do something",
             "verification_instruction": "Verify",
             "agent_id": "test-agent",
-            "priority": "high"
+            "priority": "high",
+            "project_id": auth_client.project_id
         })
         assert response.status_code == 201
         task_ids.append(response.json()["id"])
     
     # Query via REST API
-    rest_response = client.get("/tasks?task_type=concrete&priority=high")
+    rest_response = auth_client.get("/api/Task/list?task_type=concrete&priority=high")
     assert rest_response.status_code == 200
     rest_tasks = rest_response.json()
     rest_task_ids = {task["id"] for task in rest_tasks}
@@ -290,7 +342,7 @@ def test_graphql_query_tasks_matches_rest_api(client):
     }
     """
     
-    graphql_response = client.post("/graphql", json={"query": query})
+    graphql_response = auth_client.post("/graphql", json={"query": query})
     assert graphql_response.status_code == 200
     graphql_data = graphql_response.json()
     graphql_tasks = graphql_data["data"]["tasks"]["tasks"]
@@ -309,37 +361,39 @@ def test_graphql_query_tasks_matches_rest_api(client):
         assert graphql_task["priority"] == rest_task["priority"]
 
 
-def test_graphql_query_relationships(client):
+def test_graphql_query_relationships(auth_client, client):
     """Test GraphQL query for relationships."""
     # Create parent and child tasks
-    parent_response = client.post("/tasks", json={
+    parent_response = auth_client.post("/api/Task/create", json={
         "title": "Parent Task",
         "task_type": "epic",
         "task_instruction": "Parent",
         "verification_instruction": "Verify",
-        "agent_id": "test-agent"
+        "agent_id": "test-agent",
+        "project_id": auth_client.project_id
     })
     assert parent_response.status_code == 201
     parent_id = parent_response.json()["id"]
     
-    child_response = client.post("/tasks", json={
+    child_response = auth_client.post("/api/Task/create", json={
         "title": "Child Task",
         "task_type": "concrete",
         "task_instruction": "Child",
         "verification_instruction": "Verify",
-        "agent_id": "test-agent"
+        "agent_id": "test-agent",
+        "project_id": auth_client.project_id
     })
     assert child_response.status_code == 201
     child_id = child_response.json()["id"]
     
     # Create relationship via REST API
-    rel_response = client.post("/relationships", json={
+    rel_response = auth_client.post("/relationships", json={
         "parent_task_id": parent_id,
         "child_task_id": child_id,
         "relationship_type": "subtask",
         "agent_id": "test-agent"
     })
-    assert rel_response.status_code == 200
+    assert rel_response.status_code == 201
     
     # Query relationships via GraphQL
     query = """
@@ -365,25 +419,26 @@ def test_graphql_query_relationships(client):
     assert rel["relationshipType"] == "subtask"
 
 
-def test_graphql_query_tasks_with_sorting(client):
+def test_graphql_query_tasks_with_sorting(auth_client, client):
     """Test GraphQL query for tasks with sorting."""
     # Create tasks with different priorities
     priorities = ["low", "medium", "high", "critical"]
     for priority in priorities:
-        response = client.post("/tasks", json={
+        response = auth_client.post("/api/Task/create", json={
             "title": f"{priority} priority task",
             "task_type": "concrete",
             "task_instruction": "Do something",
             "verification_instruction": "Verify",
             "agent_id": "test-agent",
-            "priority": priority
+            "priority": priority,
+            "project_id": auth_client.project_id
         })
         assert response.status_code == 201
     
     # Query with priority sorting (DESC - highest first)
     query = """
     query {
-        tasks(orderBy: {field: "priority", direction: DESC}) {
+        tasks(orderBy: {field: "priority", direction: "DESC"}) {
             tasks {
                 id
                 title
@@ -406,9 +461,11 @@ def test_graphql_query_tasks_with_sorting(client):
     assert priorities_ordered[0] == "critical"
 
 
-def test_graphql_query_complex_filtering(client):
+def test_graphql_query_complex_filtering(auth_client, client, temp_db):
     """Test GraphQL query with multiple filters."""
-    # Create project
+    db, _, _ = temp_db
+    
+    # Create project (projects endpoint doesn't require auth)
     project_response = client.post("/projects", json={
         "name": "test-filter-project",
         "local_path": "/tmp/test",
@@ -417,10 +474,28 @@ def test_graphql_query_complex_filtering(client):
     assert project_response.status_code == 201
     project_id = project_response.json()["id"]
     
+    # Create API key for the new project so we can create tasks in it
+    key_id, api_key = db.create_api_key(project_id, "Test API Key for Project 2")
+    
+    # Create authenticated client for project 2
+    class Project2Client:
+        def __init__(self, client, api_key):
+            self.client = client
+            self.headers = {"X-API-Key": api_key}
+            self.project_id = project_id
+        
+        def post(self, url, **kwargs):
+            if "headers" not in kwargs:
+                kwargs["headers"] = {}
+            kwargs["headers"].update(self.headers)
+            return self.client.post(url, **kwargs)
+    
+    project2_client = Project2Client(client, api_key)
+    
     # Create tasks in project with different statuses
     statuses = ["available", "in_progress", "complete"]
     for status in statuses:
-        response = client.post("/tasks", json={
+        response = project2_client.post("/api/Task/create", json={
             "title": f"{status} task",
             "task_type": "concrete",
             "task_instruction": "Do something",
@@ -433,10 +508,10 @@ def test_graphql_query_complex_filtering(client):
         
         # Update status via lock/complete endpoints
         if status == "in_progress":
-            client.post(f"/tasks/{task_id}/lock", json={"agent_id": "test-agent"})
+            project2_client.post("/api/Task/lock", json={"task_id": task_id, "agent_id": "test-agent"})
         elif status == "complete":
-            client.post(f"/tasks/{task_id}/lock", json={"agent_id": "test-agent"})
-            client.post(f"/tasks/{task_id}/complete", json={"agent_id": "test-agent"})
+            project2_client.post("/api/Task/lock", json={"task_id": task_id, "agent_id": "test-agent"})
+            project2_client.post("/api/Task/complete", json={"task_id": task_id, "agent_id": "test-agent"})
     
     # Query with multiple filters
     query = """
@@ -452,7 +527,7 @@ def test_graphql_query_complex_filtering(client):
     }
     """ % project_id
     
-    response = client.post("/graphql", json={"query": query})
+    response = auth_client.post("/graphql", json={"query": query})
     assert response.status_code == 200
     data = response.json()
     assert "data" in data

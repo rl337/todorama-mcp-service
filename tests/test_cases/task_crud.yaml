@@ -1,0 +1,379 @@
+# YAML-driven test cases for Task CRUD operations
+# This replaces multiple individual Python test functions
+
+test_cases:
+  # ============================================================================
+  # CREATE operations
+  # ============================================================================
+  
+  - name: "create_task_basic"
+    endpoint: "/api/Task/create"
+    method: "POST"
+    auth: true
+    setup:
+      - type: "set_project_id"
+    request:
+      title: "API Test Task"
+      task_type: "concrete"
+      task_instruction: "Do something"
+      verification_instruction: "Verify it works"
+      agent_id: "test-agent"
+      project_id: "${project_id}"
+    expected:
+      status_code: 201
+      response_fields:
+        - "id"
+        - "title"
+        - "task_type"
+      assertions:
+        - field: "title"
+          equals: "API Test Task"
+        - field: "task_type"
+          equals: "concrete"
+    save_response: "created_task"
+  
+  - name: "create_task_with_priority"
+    endpoint: "/api/Task/create"
+    method: "POST"
+    auth: true
+    setup:
+      - type: "set_project_id"
+    request:
+      title: "Test Task"
+      task_type: "concrete"
+      task_instruction: "Test"
+      verification_instruction: "Verify"
+      agent_id: "test-agent"
+      project_id: "${project_id}"
+      priority: "high"
+    expected:
+      status_code: 201
+      assertions:
+        - field: "priority"
+          equals: "high"
+  
+  - name: "create_task_default_priority"
+    endpoint: "/api/Task/create"
+    method: "POST"
+    auth: true
+    setup:
+      - type: "set_project_id"
+    request:
+      title: "Test Task"
+      task_type: "concrete"
+      task_instruction: "Test"
+      verification_instruction: "Verify"
+      agent_id: "test-agent"
+      project_id: "${project_id}"
+    expected:
+      status_code: 201
+      assertions:
+        - field: "priority"
+          equals: "medium"
+  
+  - name: "create_task_with_estimated_hours"
+    endpoint: "/api/Task/create"
+    method: "POST"
+    auth: true
+    setup:
+      - type: "set_project_id"
+    request:
+      title: "Task with Hours"
+      task_type: "concrete"
+      task_instruction: "Task"
+      verification_instruction: "Verify"
+      agent_id: "test-agent"
+      project_id: "${project_id}"
+      estimated_hours: 5.5
+    expected:
+      status_code: 201
+      assertions:
+        - field: "estimated_hours"
+          equals: 5.5
+  
+  - name: "create_task_with_due_date"
+    endpoint: "/api/Task/create"
+    method: "POST"
+    auth: true
+    setup:
+      - type: "set_project_id"
+    request:
+      title: "Task with Due Date"
+      task_type: "concrete"
+      task_instruction: "Task"
+      verification_instruction: "Verify"
+      agent_id: "test-agent"
+      project_id: "${project_id}"
+      due_date: "2025-12-31T23:59:59Z"
+    expected:
+      status_code: 201
+      assertions:
+        - field: "due_date"
+          contains: "2025-12-31"
+  
+  # ============================================================================
+  # GET operations
+  # ============================================================================
+  
+  - name: "get_task_by_id"
+    endpoint: "/api/Task/get"
+    method: "GET"
+    auth: false
+    setup:
+      - type: "create_task"
+        save_as: "task_id"
+        data:
+          title: "Task to Get"
+          task_type: "concrete"
+          task_instruction: "Test"
+          verification_instruction: "Verify"
+          agent_id: "test-agent"
+    request:
+      task_id: "${task_id}"
+    expected:
+      status_code: 200
+      assertions:
+        - field: "id"
+          equals: "${task_id}"
+        - field: "title"
+          equals: "Task to Get"
+  
+  - name: "get_nonexistent_task"
+    endpoint: "/api/Task/get"
+    method: "GET"
+    auth: false
+    request:
+      task_id: 99999
+    expected:
+      status_code: 404
+  
+  # ============================================================================
+  # UPDATE operations
+  # ============================================================================
+  
+  - name: "update_task_status"
+    endpoint: "/api/Task/get"
+    method: "PATCH"
+    auth: true
+    setup:
+      - type: "create_task"
+        save_as: "task_id"
+        data:
+          title: "Task to Update"
+          task_type: "concrete"
+          task_instruction: "Test"
+          verification_instruction: "Verify"
+          agent_id: "test-agent"
+    request:
+      task_id: "${task_id}"
+      task_status: "in_progress"
+    expected:
+      status_code: 200
+      assertions:
+        - field: "task_status"
+          equals: "in_progress"
+  
+  - name: "update_task_priority"
+    endpoint: "/api/Task/get"
+    method: "PATCH"
+    auth: true
+    setup:
+      - type: "set_project_id"
+      - type: "create_task"
+        save_as: "task_id"
+        data:
+          title: "Task"
+          task_type: "concrete"
+          task_instruction: "Test"
+          verification_instruction: "Verify"
+          agent_id: "test-agent"
+          project_id: "${project_id}"
+          priority: "low"
+    request:
+      task_id: "${task_id}"
+      priority: "high"
+    expected:
+      status_code: 200
+      assertions:
+        - field: "priority"
+          equals: "high"
+  
+  # ============================================================================
+  # LIST/QUERY operations
+  # ============================================================================
+  
+  - name: "list_all_tasks"
+    endpoint: "/api/Task/list"
+    method: "GET"
+    auth: false
+    request: {}
+    expected:
+      status_code: 200
+  
+  - name: "list_tasks_filtered_by_type"
+    endpoint: "/api/Task/list"
+    method: "GET"
+    auth: false
+    request:
+      task_type: "concrete"
+    expected:
+      status_code: 200
+  
+  - name: "list_tasks_filtered_by_status"
+    endpoint: "/api/Task/list"
+    method: "GET"
+    auth: false
+    request:
+      task_status: "available"
+    expected:
+      status_code: 200
+  
+  - name: "list_tasks_filtered_by_priority"
+    endpoint: "/api/Task/list"
+    method: "GET"
+    auth: false
+    request:
+      priority: "high"
+    expected:
+      status_code: 200
+  
+  # ============================================================================
+  # LOCK/UNLOCK operations
+  # ============================================================================
+  
+  - name: "lock_task"
+    endpoint: "/api/Task/lock"
+    method: "POST"
+    auth: true
+    setup:
+      - type: "set_project_id"
+      - type: "create_task"
+        save_as: "task_id"
+        data:
+          title: "Lock Test"
+          task_type: "concrete"
+          task_instruction: "Test"
+          verification_instruction: "Verify"
+          agent_id: "test-agent"
+          project_id: "${project_id}"
+    request:
+      task_id: "${task_id}"
+      agent_id: "agent-1"
+    expected:
+      status_code: 200
+      assertions:
+        - field: "task_status"
+          equals: "in_progress"
+        - field: "assigned_agent"
+          equals: "agent-1"
+  
+  - name: "unlock_task"
+    endpoint: "/api/Task/unlock"
+    method: "POST"
+    auth: true
+    setup:
+      - type: "set_project_id"
+      - type: "create_task"
+        save_as: "task_id"
+        data:
+          title: "Unlock Test"
+          task_type: "concrete"
+          task_instruction: "Test"
+          verification_instruction: "Verify"
+          agent_id: "test-agent"
+          project_id: "${project_id}"
+    request:
+      task_id: "${task_id}"
+      agent_id: "agent-1"
+    expected:
+      status_code: 200
+      assertions:
+        - field: "task_status"
+          equals: "available"
+        - field: "assigned_agent"
+          equals: null
+  
+  # ============================================================================
+  # COMPLETE operations
+  # ============================================================================
+  
+  - name: "complete_task"
+    endpoint: "/api/Task/complete"
+    method: "POST"
+    auth: true
+    setup:
+      - type: "set_project_id"
+      - type: "create_task"
+        save_as: "task_id"
+        data:
+          title: "Complete Test"
+          task_type: "concrete"
+          task_instruction: "Test"
+          verification_instruction: "Verify"
+          agent_id: "test-agent"
+          project_id: "${project_id}"
+    request:
+      task_id: "${task_id}"
+      agent_id: "agent-1"
+      notes: "Done!"
+    expected:
+      status_code: 200
+      assertions:
+        - field: "task_status"
+          equals: "complete"
+  
+  # ============================================================================
+  # ERROR HANDLING
+  # ============================================================================
+  
+  - name: "error_invalid_task_type"
+    endpoint: "/api/Task/create"
+    method: "POST"
+    auth: true
+    setup:
+      - type: "set_project_id"
+    request:
+      title: "Test Task"
+      task_type: "invalid_type"
+      task_instruction: "Test"
+      verification_instruction: "Verify"
+      agent_id: "test-agent"
+      project_id: "${project_id}"
+    expected:
+      status_code: 422
+  
+  - name: "error_task_not_found"
+    endpoint: "/api/Task/get"
+    method: "GET"
+    auth: false
+    request:
+      task_id: 99999
+    expected:
+      status_code: 404
+  
+  - name: "error_lock_task_not_found"
+    endpoint: "/api/Task/lock"
+    method: "POST"
+    auth: true
+    request:
+      task_id: 99999
+      agent_id: "agent-1"
+    expected:
+      status_code: 404
+  
+  - name: "error_invalid_priority"
+    endpoint: "/api/Task/create"
+    method: "POST"
+    auth: true
+    setup:
+      - type: "set_project_id"
+    request:
+      title: "Test Task"
+      task_type: "concrete"
+      task_instruction: "Test"
+      verification_instruction: "Verify"
+      agent_id: "test-agent"
+      project_id: "${project_id}"
+      priority: "invalid_priority"
+    expected:
+      status_code: 422

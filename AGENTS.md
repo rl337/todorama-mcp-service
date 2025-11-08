@@ -1811,6 +1811,177 @@ If you must push without tests passing:
 
 ---
 
+## Fixing Test Failures: Systematic Approach
+
+**When fixing test failures, especially routing-related ones, use a systematic approach to fix many issues at once.**
+
+### Pattern Recognition for Test Failures
+
+**Most test failures fall into these categories:**
+
+1. **Missing Routes (404 errors)** - Most common and easiest to fix
+   - **Symptom**: Tests return `404 Not Found`
+   - **Solution**: Add missing routes to `all_routes.py` or command router
+   - **Pattern**: Many tests failing with 404 usually means missing route definitions
+   - **Example**: If 10 tests fail with 404 for `/api/Task/bulk/*`, add all bulk routes at once
+
+2. **Route Conflicts** - Routes under `/api/` conflict with command router
+   - **Symptom**: Routes exist but return 404 or wrong handler
+   - **Solution**: 
+     - Routes under `/api/{entity}/{action}` are handled by command router
+     - Use `/tasks/`, `/projects/`, etc. for traditional REST routes
+     - Or add special handling in command router for sub-paths like `import/json`
+   - **Example**: `/api/Task/import/json` conflicts with command router - use `/tasks/import/json` or handle in command router
+
+3. **Validation Errors (422)** - Request body format issues
+   - **Symptom**: Tests return `422 Unprocessable Entity`
+   - **Solution**: Check request body format, parameter names, required fields
+   - **Pattern**: Similar validation errors suggest common parameter handling issue
+
+4. **Test Isolation Issues** - Tests finding data from other tests
+   - **Symptom**: Tests pass individually but fail in suite, wrong data in results
+   - **Solution**: Make tests filter to their own data, use unique identifiers, or improve test cleanup
+   - **Pattern**: Search/list tests returning unexpected results
+
+5. **Response Format Mismatches** - Tests expect different response structure
+   - **Symptom**: `KeyError` accessing response fields, wrong status codes
+   - **Solution**: Check test expectations vs actual response format
+   - **Pattern**: Multiple tests failing with same KeyError suggests response format change needed
+
+### Systematic Fix Strategy
+
+**When you see many test failures:**
+
+1. **Categorize failures first:**
+   ```bash
+   # Run tests and categorize by error type
+   pytest tests/test_api.py -v --tb=no 2>&1 | grep -E "FAILED|404|422|KeyError" | sort | uniq -c
+   ```
+
+2. **Fix by category, not one-by-one:**
+   - **404 errors**: Identify all missing routes, add them all at once
+   - **422 errors**: Fix parameter handling pattern, apply to all affected routes
+   - **Test isolation**: Fix test data filtering pattern, apply to all affected tests
+   - **Response format**: Fix response structure, apply to all affected endpoints
+
+3. **Example: Fixing Missing Routes**
+   ```python
+   # Instead of fixing one route at a time:
+   # ❌ BAD: Add route, test, add next route, test...
+   
+   # ✅ GOOD: Identify all missing routes, add them all:
+   # 1. Find all 404 errors:
+   #    grep -r "404\|Not Found" test_output
+   
+   # 2. List all missing routes:
+   #    - /tags (POST)
+   #    - /api/Task/import/json (POST)
+   #    - /api/Task/bulk/* (POST)
+   #    - /analytics/* (GET)
+   #    - /api-keys/* (POST/GET/DELETE)
+   
+   # 3. Add all routes to all_routes.py in one go
+   # 4. Run tests - many should pass now
+   ```
+
+4. **Example: Fixing Route Conflicts**
+   ```python
+   # Problem: Routes under /api/ conflict with command router
+   # Command router handles: /api/{entity}/{action}
+   # So /api/Task/import/json gets caught by command router
+   
+   # Solution options:
+   # Option 1: Use traditional REST paths (recommended)
+   @router.post("/tasks/import/json")  # Not /api/Task/import/json
+   @router.post("/tasks/bulk/complete")  # Not /api/Task/bulk/complete
+   
+   # Option 2: Add special handling in command router
+   # In command_router.py, add before generic route:
+   @router.post("/{entity_name}/import/{format}")
+   async def entity_import(...):
+       # Handle import actions
+   ```
+
+5. **Example: Fixing Test Isolation**
+   ```python
+   # Problem: Search tests finding tasks from other tests
+   # Solution: Filter to test's own data
+   
+   # ❌ BAD: Assumes only test's data exists
+   assert len(tasks) == 1
+   
+   # ✅ GOOD: Filter to test's own tasks
+   our_tasks = [t for t in tasks if t["id"] in [task1_id, task2_id]]
+   assert len(our_tasks) == 1
+   assert our_tasks[0]["id"] == task1_id
+   ```
+
+### Route Registration Order Matters
+
+**FastAPI matches routes in order - more specific routes must come before generic ones:**
+
+```python
+# ✅ CORRECT ORDER:
+# 1. Specific routes first
+@router.get("/tasks/export/{format}")  # Specific
+@router.get("/tasks/{task_id}")        # Generic (comes after)
+
+# 2. Command router routes (generic pattern)
+app.include_router(command_router)  # Handles /api/{entity}/{action}
+
+# 3. All routes (traditional REST)
+app.include_router(all_routes_router)  # Handles /tasks, /projects, etc.
+```
+
+### Quick Fix Checklist
+
+**When fixing test failures:**
+
+- [ ] **Categorize failures** - Group by error type (404, 422, KeyError, etc.)
+- [ ] **Identify patterns** - Are multiple failures the same root cause?
+- [ ] **Fix systematically** - Address category, not individual tests
+- [ ] **Check route conflicts** - Routes under `/api/` may conflict with command router
+- [ ] **Verify route order** - Specific routes before generic ones
+- [ ] **Test in batches** - Run related tests together to verify fixes
+- [ ] **Document patterns** - Note common issues for future reference
+
+### Common Patterns
+
+**Pattern 1: Missing Routes (404)**
+- **Fix**: Add routes to `all_routes.py` or command router
+- **Impact**: Fixes many tests at once
+
+**Pattern 2: Route Conflicts**
+- **Fix**: Move routes out of `/api/` or add special handling
+- **Impact**: Fixes all routes in that category
+
+**Pattern 3: Validation (422)**
+- **Fix**: Check parameter names, required fields, body format
+- **Impact**: Fixes all endpoints with same validation issue
+
+**Pattern 4: Test Isolation**
+- **Fix**: Filter test data, use unique identifiers
+- **Impact**: Fixes all tests with isolation issues
+
+**Pattern 5: Response Format**
+- **Fix**: Update response structure or test expectations
+- **Impact**: Fixes all tests expecting that format
+
+### Overnight Agent Strategy
+
+**For agents running overnight to fix test failures:**
+
+1. **Start with categorization** - Run full test suite, group failures
+2. **Fix by category** - Don't fix tests one-by-one, fix patterns
+3. **Commit after each category** - Small, focused commits
+4. **Monitor progress** - Track failure count reduction
+5. **Document patterns** - Note what worked for future reference
+6. **Don't get stuck** - If a fix doesn't work after 2-3 attempts, move on and document
+
+**Remember**: Fixing patterns fixes many tests. Fixing individual tests is slow and doesn't address root causes.
+
+---
+
 **Remember**: Tests are not optional. They are your safety net and documentation.
 Every feature should have tests, and every commit should pass all tests.
 

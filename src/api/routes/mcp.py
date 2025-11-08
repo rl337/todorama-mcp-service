@@ -24,11 +24,21 @@ async def mcp_create_task(
     due_date: Optional[str] = Body(None, embed=True)
 ):
     """MCP: Create a new task."""
+    from fastapi import HTTPException
     result = MCPTodoAPI.create_task(
         title, task_type, task_instruction, verification_instruction, agent_id,
         project_id=project_id, parent_task_id=parent_task_id, relationship_type=relationship_type,
         notes=notes, priority=priority, estimated_hours=estimated_hours, due_date=due_date
     )
+    if not result.get("success", True):
+        error_msg = result.get("error", "Unknown error")
+        # Check if it's a circular dependency or validation error
+        if "circular" in error_msg.lower() or "dependency" in error_msg.lower():
+            raise HTTPException(status_code=400, detail=error_msg)
+        elif "not found" in error_msg.lower():
+            raise HTTPException(status_code=404, detail=error_msg)
+        else:
+            raise HTTPException(status_code=400, detail=error_msg)
     return result
 
 
@@ -49,6 +59,16 @@ async def mcp_unlock_task(
 ):
     """MCP: Unlock (release) a reserved task."""
     result = MCPTodoAPI.unlock_task(task_id, agent_id)
+    return result
+
+
+@router.post("/bulk_unlock_tasks")
+async def mcp_bulk_unlock_tasks(
+    task_ids: List[int] = Body(..., embed=True),
+    agent_id: str = Body(..., embed=True)
+):
+    """MCP: Unlock multiple tasks atomically."""
+    result = MCPTodoAPI.bulk_unlock_tasks(task_ids, agent_id)
     return result
 
 
@@ -107,8 +127,8 @@ async def mcp_search_tasks(
     limit: int = Body(100, embed=True)
 ):
     """MCP: Search tasks using full-text search."""
-    result = MCPTodoAPI.search_tasks(query, limit)
-    return result
+    tasks = MCPTodoAPI.search_tasks(query, limit)
+    return {"tasks": tasks}
 
 
 @router.post("/link_github_issue")
@@ -313,7 +333,7 @@ async def mcp_functions():
 
 
 @router.post("")
-async def mcp_jsonrpc(request: dict):
+async def mcp_jsonrpc(request: dict = Body(...)):
     """Generic JSON-RPC 2.0 endpoint for MCP."""
     from mcp_api import handle_jsonrpc_request
     result = handle_jsonrpc_request(request)
@@ -321,14 +341,12 @@ async def mcp_jsonrpc(request: dict):
 
 
 @router.post("/sse")
-async def mcp_sse_post(request: dict):
+async def mcp_sse_post(request: dict = Body(...)):
     """Server-Sent Events endpoint for MCP (POST)."""
-    from mcp_api import handle_sse_request
-    from adapters.http_framework import HTTPFrameworkAdapter
-    http_adapter = HTTPFrameworkAdapter()
-    StreamingResponse = http_adapter.StreamingResponse
-    result = handle_sse_request(request)
-    return StreamingResponse(content=result, media_type="text/event-stream")
+    from mcp_api import handle_jsonrpc_request
+    # POST requests with JSON-RPC should return JSON, not SSE stream
+    result = handle_jsonrpc_request(request)
+    return result
 
 
 @router.get("/sse")
@@ -350,8 +368,8 @@ async def mcp_list_available_tasks(
     limit: int = Body(10, embed=True)
 ):
     """MCP: List available tasks for an agent type."""
-    result = MCPTodoAPI.list_available_tasks(agent_type, project_id, limit)
-    return result
+    tasks = MCPTodoAPI.list_available_tasks(agent_type, project_id, limit)
+    return {"tasks": tasks}
 
 
 @router.post("/reserve_task")
@@ -392,5 +410,42 @@ async def mcp_verify_task(
 ):
     """MCP: Mark a task as verified."""
     result = MCPTodoAPI.verify_task(task_id, agent_id)
+    return result
+
+
+@router.post("/list_projects")
+async def mcp_list_projects():
+    """MCP: List all available projects."""
+    result = MCPTodoAPI.list_projects()
+    return result
+
+
+@router.post("/get_project")
+async def mcp_get_project(
+    project_id: int = Body(..., embed=True)
+):
+    """MCP: Get project details by ID."""
+    result = MCPTodoAPI.get_project(project_id)
+    return result
+
+
+@router.post("/get_project_by_name")
+async def mcp_get_project_by_name(
+    name: str = Body(..., embed=True)
+):
+    """MCP: Get project by name."""
+    result = MCPTodoAPI.get_project_by_name(name)
+    return result
+
+
+@router.post("/create_project")
+async def mcp_create_project(
+    name: str = Body(..., embed=True),
+    local_path: str = Body(..., embed=True),
+    origin_url: Optional[str] = Body(None, embed=True),
+    description: Optional[str] = Body(None, embed=True)
+):
+    """MCP: Create a new project."""
+    result = MCPTodoAPI.create_project(name, local_path, origin_url, description)
     return result
 

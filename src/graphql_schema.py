@@ -39,6 +39,9 @@ class Task:
     notes: Optional[str]
     due_date: Optional[str]
     estimated_hours: Optional[float]
+    actual_hours: Optional[float]
+    time_delta_hours: Optional[float]
+    started_at: Optional[str]
 
 
 @strawberry.type
@@ -114,7 +117,16 @@ class Query:
         task = db.get_task(id)
         if not task:
             return None
-        return Task(**task)
+        # Filter task dict to only include fields in Task GraphQL type
+        task_fields = {
+            'id', 'project_id', 'title', 'task_type', 'task_instruction',
+            'verification_instruction', 'task_status', 'verification_status',
+            'priority', 'assigned_agent', 'created_at', 'updated_at',
+            'completed_at', 'notes', 'due_date', 'estimated_hours',
+            'actual_hours', 'time_delta_hours', 'started_at'
+        }
+        filtered_task = {k: v for k, v in task.items() if k in task_fields}
+        return Task(**filtered_task)
     
     @strawberry.field
     def tasks(
@@ -184,7 +196,15 @@ class Query:
             tasks = list(reversed(tasks))
         
         # Convert to GraphQL types
-        task_objects = [Task(**task) for task in tasks]
+        # Filter task dicts to only include fields in Task GraphQL type
+        task_fields = {
+            'id', 'project_id', 'title', 'task_type', 'task_instruction',
+            'verification_instruction', 'task_status', 'verification_status',
+            'priority', 'assigned_agent', 'created_at', 'updated_at',
+            'completed_at', 'notes', 'due_date', 'estimated_hours',
+            'actual_hours', 'time_delta_hours', 'started_at'
+        }
+        task_objects = [Task(**{k: v for k, v in task.items() if k in task_fields}) for task in tasks]
         
         return TasksConnection(
             tasks=task_objects,

@@ -1953,6 +1953,167 @@ class MCPTodoAPI:
                 "success": False,
                 "error": str(e)
             }
+    
+    @staticmethod
+    def list_projects() -> Dict[str, Any]:
+        """
+        List all available projects.
+        
+        Returns:
+            Dictionary with success status and list of projects
+        """
+        with trace_span("mcp.list_projects"):
+            try:
+                projects = get_db().list_projects()
+                return {
+                    "success": True,
+                    "projects": [dict(project) for project in projects],
+                    "count": len(projects)
+                }
+            except Exception as e:
+                add_span_attribute("mcp.success", False)
+                add_span_attribute("mcp.error", str(e))
+                return {
+                    "success": False,
+                    "error": f"Failed to list projects: {str(e)}"
+                }
+    
+    @staticmethod
+    def get_project(project_id: int) -> Dict[str, Any]:
+        """
+        Get project details by ID.
+        
+        Args:
+            project_id: Project ID to retrieve
+            
+        Returns:
+            Dictionary with success status and project data
+        """
+        with trace_span("mcp.get_project", attributes={"mcp.project_id": project_id}):
+            try:
+                project = get_db().get_project(project_id)
+                if not project:
+                    add_span_attribute("mcp.success", False)
+                    add_span_attribute("mcp.error", "project_not_found")
+                    return {
+                        "success": False,
+                        "error": f"Project {project_id} not found. Please verify the project_id is correct."
+                    }
+                
+                add_span_attribute("mcp.success", True)
+                return {
+                    "success": True,
+                    "project": dict(project)
+                }
+            except Exception as e:
+                add_span_attribute("mcp.success", False)
+                add_span_attribute("mcp.error", str(e))
+                return {
+                    "success": False,
+                    "error": f"Failed to get project: {str(e)}"
+                }
+    
+    @staticmethod
+    def get_project_by_name(name: str) -> Dict[str, Any]:
+        """
+        Get project by name (helpful for looking up project_id).
+        
+        Args:
+            name: Project name to search for
+            
+        Returns:
+            Dictionary with success status and project data
+        """
+        with trace_span("mcp.get_project_by_name", attributes={"mcp.project_name": name}):
+            try:
+                project = get_db().get_project_by_name(name.strip())
+                if not project:
+                    add_span_attribute("mcp.success", False)
+                    add_span_attribute("mcp.error", "project_not_found")
+                    return {
+                        "success": False,
+                        "error": f"Project '{name}' not found. Please verify the project name is correct."
+                    }
+                
+                add_span_attribute("mcp.success", True)
+                return {
+                    "success": True,
+                    "project": dict(project)
+                }
+            except Exception as e:
+                add_span_attribute("mcp.success", False)
+                add_span_attribute("mcp.error", str(e))
+                return {
+                    "success": False,
+                    "error": f"Failed to get project by name: {str(e)}"
+                }
+    
+    @staticmethod
+    def create_project(
+        name: str,
+        local_path: str,
+        origin_url: Optional[str] = None,
+        description: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a new project.
+        
+        Args:
+            name: Project name (must be unique)
+            local_path: Local filesystem path to the project
+            origin_url: Optional origin URL (e.g., GitHub repository)
+            description: Optional project description
+            
+        Returns:
+            Dictionary with success status and created project data
+        """
+        with trace_span(
+            "mcp.create_project",
+            attributes={
+                "mcp.project_name": name,
+                "mcp.has_origin_url": origin_url is not None,
+                "mcp.has_description": description is not None
+            }
+        ):
+            try:
+                import sqlite3
+                project_id = get_db().create_project(
+                    name=name,
+                    local_path=local_path,
+                    origin_url=origin_url,
+                    description=description
+                )
+                created_project = get_db().get_project(project_id)
+                if not created_project:
+                    add_span_attribute("mcp.success", False)
+                    add_span_attribute("mcp.error", "failed_to_retrieve")
+                    return {
+                        "success": False,
+                        "error": "Failed to retrieve created project"
+                    }
+                
+                add_span_attribute("mcp.success", True)
+                add_span_attribute("mcp.project_id", project_id)
+                return {
+                    "success": True,
+                    "project_id": project_id,
+                    "project": dict(created_project),
+                    "message": f"Project '{name}' created successfully"
+                }
+            except sqlite3.IntegrityError:
+                add_span_attribute("mcp.success", False)
+                add_span_attribute("mcp.error", "duplicate_name")
+                return {
+                    "success": False,
+                    "error": f"Project with name '{name}' already exists. Please use a different name."
+                }
+            except Exception as e:
+                add_span_attribute("mcp.success", False)
+                add_span_attribute("mcp.error", str(e))
+                return {
+                    "success": False,
+                    "error": f"Failed to create project: {str(e)}"
+                }
 
 
 # MCP function definitions (for documentation/registration)
@@ -2181,8 +2342,25 @@ MCP_FUNCTIONS = [
         "name": "get_agent_performance",
         "description": "Get your performance statistics including tasks completed, average completion time, success rate. Use this to track your productivity and identify areas for improvement. Optionally filter by task_type to see stats for specific task types. Returns: Dictionary with completion counts, average hours, success rate, and other metrics.\n\nERROR HANDLING:\n- No errors typically returned - function returns statistics dictionary even if agent_id has no history (returns zeros/defaults).\n- Parameter validation errors (invalid task_type enum) are handled by framework validation before function is called.\n- Database errors are rare; if connection issues occur, retry with exponential backoff.",
         "parameters": {
-            "agent_id": {"type": "string", "description": "Your agent identifier"},
-            "task_type": {"type": "string", "optional": True, "enum": ["concrete", "abstract", "epic"], "description": "Optional: Filter statistics by task type (omit to see all types)"}
+            "agent_id": {
+                "type": "string",
+                "description": "Your agent identifier. Must be a non-empty string (1-100 characters). Use the same agent_id you use for all task operations.",
+                "minLength": 1,
+                "maxLength": 100,
+                "example": "cursor-agent"
+            },
+            "task_type": {
+                "type": "string",
+                "optional": True,
+                "enum": ["concrete", "abstract", "epic"],
+                "description": "Optional: Filter statistics by task type. Omit to see statistics for all task types. Use to analyze performance for specific task categories.",
+                "enumDescriptions": {
+                    "concrete": "Filter statistics to only concrete (implementable) tasks",
+                    "abstract": "Filter statistics to only abstract (needs breakdown) tasks",
+                    "epic": "Filter statistics to only epic (large feature) tasks"
+                },
+                "example": "concrete"
+            }
         }
     },
     {
@@ -2543,15 +2721,36 @@ MCP_FUNCTIONS = [
         "name": "get_tasks_approaching_deadline",
         "description": "Get tasks with due dates approaching within the specified number of days. Use this for deadline monitoring and prioritization. Returns: Dictionary with success status, tasks list, and days_ahead value used. Useful for scheduling and deadline management.\n\nERROR HANDLING:\n- No errors typically returned - function returns success with tasks list (empty if none approaching deadline).\n- Parameter validation errors (invalid days_ahead, invalid limit) are handled by framework validation before function is called.\n- Database errors are rare; if connection issues occur, retry with exponential backoff.",
         "parameters": {
-            "days_ahead": {"type": "integer", "optional": True, "default": 3, "description": "Number of days ahead to look for approaching deadlines (default: 3 days)"},
-            "limit": {"type": "integer", "optional": True, "default": 100, "description": "Maximum number of results (default: 100)"}
+            "days_ahead": {
+                "type": "integer",
+                "optional": True,
+                "default": 3,
+                "description": "Number of days ahead to look for approaching deadlines. Tasks with due dates within this window are returned. Must be a positive integer if provided.",
+                "minimum": 1,
+                "maximum": 365,
+                "example": 3
+            },
+            "limit": {
+                "type": "integer",
+                "optional": True,
+                "default": 100,
+                "description": "Maximum number of tasks to return. Must be between 1 and 1000 (default: 100).",
+                "minimum": 1,
+                "maximum": 1000,
+                "example": 100
+            }
         }
     },
     {
         "name": "create_tag",
         "description": "Create a new tag for categorizing tasks. If a tag with the same name already exists, returns the existing tag ID (no duplicate tags). Use tags to organize and filter tasks by categories, features, or attributes. Returns: Dictionary with success status, tag_id, and tag data.\n\nERROR HANDLING:\n- Parameter validation errors (empty tag name) are handled by framework validation before function is called.\n- Database errors (unique constraint violations handled internally - returns existing tag) are rare. If connection issues occur, retry with exponential backoff.\n- If tag with same name exists, function returns existing tag_id (no error) - this is expected behavior, not an error.",
         "parameters": {
-            "name": {"type": "string", "description": "Tag name (e.g., 'backend', 'frontend', 'bug', 'feature'). Must be unique."}
+            "name": {
+                "type": "string",
+                "description": "Tag name for categorizing tasks. Must be non-empty and unique. Common examples: 'backend', 'frontend', 'bug', 'feature', 'documentation', 'refactoring'. Use descriptive names that help organize tasks.",
+                "minLength": 1,
+                "example": "backend"
+            }
         }
     },
     {
@@ -2563,23 +2762,48 @@ MCP_FUNCTIONS = [
         "name": "assign_tag_to_task",
         "description": "Assign a tag to a task for categorization. A task can have multiple tags. Use this to organize tasks by features, areas, priorities, or other dimensions. Returns: Dictionary with success status and confirmation message.\n\nERROR HANDLING:\n- Returns {\"success\": False, \"error\": \"Task X not found...\"} if task_id doesn't exist. Verify task_id is correct.\n- Returns {\"success\": False, \"error\": \"Tag X not found...\"} if tag_id doesn't exist. Verify tag_id is correct, use list_tags() or create_tag() to get valid tag IDs.\n- Returns {\"success\": False, \"error\": \"Failed to assign tag: ...\"} if assignment fails (e.g., tag already assigned, database constraint violation). Usually safe to ignore if tag is already assigned - operation is idempotent.",
         "parameters": {
-            "task_id": {"type": "integer", "description": "ID of the task to tag"},
-            "tag_id": {"type": "integer", "description": "ID of the tag to assign (get from create_tag or list_tags)"}
+            "task_id": {
+                "type": "integer",
+                "description": "ID of the task to tag. Must be a positive integer. Get task IDs from query_tasks(), list_available_tasks(), or search_tasks().",
+                "minimum": 1,
+                "example": 123
+            },
+            "tag_id": {
+                "type": "integer",
+                "description": "ID of the tag to assign. Must be a positive integer. Get tag IDs from list_tags() or create_tag().",
+                "minimum": 1,
+                "example": 5
+            }
         }
     },
     {
         "name": "remove_tag_from_task",
         "description": "Remove a tag from a task. Use this to update task categorization when tags are no longer relevant. Returns: Dictionary with success status and confirmation message.\n\nERROR HANDLING:\n- Returns {\"success\": False, \"error\": \"Task X not found...\"} if task_id doesn't exist. Verify task_id is correct.\n- Returns {\"success\": False, \"error\": \"Tag X not found...\"} if tag_id doesn't exist. Verify tag_id is correct.\n- Returns {\"success\": False, \"error\": \"Failed to remove tag: ...\"} if removal fails. Usually safe to ignore if tag is already not assigned - operation is idempotent.",
         "parameters": {
-            "task_id": {"type": "integer", "description": "ID of the task to remove tag from"},
-            "tag_id": {"type": "integer", "description": "ID of the tag to remove"}
+            "task_id": {
+                "type": "integer",
+                "description": "ID of the task to remove tag from. Must be a positive integer.",
+                "minimum": 1,
+                "example": 123
+            },
+            "tag_id": {
+                "type": "integer",
+                "description": "ID of the tag to remove. Must be a positive integer.",
+                "minimum": 1,
+                "example": 5
+            }
         }
     },
     {
         "name": "get_task_tags",
         "description": "Get all tags assigned to a specific task. Use this to see how a task is categorized or to check if a task already has certain tags. Returns: Dictionary with success status, task_id, and tags list.\n\nERROR HANDLING:\n- Returns {\"success\": False, \"error\": \"Task X not found...\"} if task_id doesn't exist. Verify task_id is correct.\n- Returns tags list (empty if task has no tags) - this is expected, not an error.\n- Database errors are rare; if connection issues occur, retry with exponential backoff.",
         "parameters": {
-            "task_id": {"type": "integer", "description": "ID of the task to get tags for"}
+            "task_id": {
+                "type": "integer",
+                "description": "ID of the task to get tags for. Must be a positive integer.",
+                "minimum": 1,
+                "example": 123
+            }
         }
     },
     {
@@ -2779,6 +3003,264 @@ MCP_FUNCTIONS = [
         "parameters": {
             "task_id": {"type": "integer", "description": "ID of the task to get GitHub links for"}
         }
+    },
+    {
+        "name": "list_projects",
+        "description": "List all available projects in the system. Use this to discover projects before creating tasks or to find project IDs. Returns: Dictionary with success status, projects list, and count. This is critical when the service is external-only, as agents need to discover/manage projects via MCP instead of REST API.\n\nERROR HANDLING:\n- No errors typically returned - function returns success with projects list (empty if no projects exist).\n- Database errors are rare; if connection issues occur, retry with exponential backoff.",
+        "parameters": {}
+    },
+    {
+        "name": "get_project",
+        "description": "Get project details by ID. Use this to retrieve full project information including name, local_path, origin_url, and description. Returns: Dictionary with success status and project data.\n\nERROR HANDLING:\n- Returns {\"success\": False, \"error\": \"Project X not found...\"} if project_id doesn't exist. Verify project_id is correct, use list_projects() to get valid project IDs.\n- Database errors are rare; if connection issues occur, retry with exponential backoff.",
+        "parameters": {
+            "project_id": {"type": "integer", "description": "ID of the project to retrieve. Must be a positive integer. Get project IDs from list_projects().", "minimum": 1, "example": 1}
+        }
+    },
+    {
+        "name": "get_project_by_name",
+        "description": "Get project by name (helpful for looking up project_id). Use this when you know the project name but need the project_id for creating tasks. Returns: Dictionary with success status and project data.\n\nERROR HANDLING:\n- Returns {\"success\": False, \"error\": \"Project 'X' not found...\"} if project name doesn't exist. Verify the project name is correct, use list_projects() to see available project names.\n- Database errors are rare; if connection issues occur, retry with exponential backoff.",
+        "parameters": {
+            "name": {"type": "string", "description": "Project name to search for. Must be non-empty. Project names are case-sensitive.", "minLength": 1, "example": "my-project"}
+        }
+    },
+    {
+        "name": "create_project",
+        "description": "Create a new project. Use this to set up projects before creating tasks. Projects organize tasks and provide context (local_path, origin_url) for agents. Returns: Dictionary with success status, project_id, and created project data.\n\nERROR HANDLING:\n- Returns {\"success\": False, \"error\": \"Project with name 'X' already exists...\"} if a project with the same name already exists. Project names must be unique. Use a different name or get the existing project with get_project_by_name().\n- Returns {\"success\": False, \"error\": \"Failed to create project: ...\"} if creation fails (e.g., database constraint violation, invalid path). Fix parameters and retry.\n- Parameter validation errors (empty name, invalid path format) are handled by framework validation before function is called.\n- Database errors are rare; if connection issues occur, retry with exponential backoff.",
+        "parameters": {
+            "name": {"type": "string", "description": "Project name (must be unique). Should be concise and descriptive (e.g., 'my-project', 'todo-service').", "minLength": 1, "example": "my-project"},
+            "local_path": {"type": "string", "description": "Local filesystem path to the project. Used by agents to locate project files and run commands in the project directory.", "minLength": 1, "example": "/path/to/project"},
+            "origin_url": {"type": "string", "optional": True, "description": "Optional origin URL (e.g., GitHub repository URL). Useful for linking tasks to source code repositories.", "example": "https://github.com/user/repo"},
+            "description": {"type": "string", "optional": True, "description": "Optional project description. Provides context about what the project is for.", "example": "My awesome project"}
+        }
     }
 ]
+
+
+def handle_jsonrpc_request(request: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Handle JSON-RPC 2.0 request.
+    
+    Args:
+        request: JSON-RPC request dictionary
+        
+    Returns:
+        JSON-RPC response dictionary
+    """
+    jsonrpc = request.get("jsonrpc", "2.0")
+    request_id = request.get("id")
+    method = request.get("method")
+    params = request.get("params", {})
+    
+    if method == "initialize":
+        return {
+            "jsonrpc": jsonrpc,
+            "id": request_id,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "serverInfo": {
+                    "name": "todo-mcp-service",
+                    "version": "1.0.0"
+                }
+            }
+        }
+    elif method == "tools/list":
+        # Return list of available tools
+        tools = []
+        for func_def in MCP_FUNCTIONS:
+            tools.append({
+                "name": func_def["name"],
+                "description": func_def["description"],
+                "inputSchema": {
+                    "type": "object",
+                    "properties": func_def.get("parameters", {}),
+                    "required": [k for k, v in func_def.get("parameters", {}).items() if v.get("optional") is not True]
+                }
+            })
+        return {
+            "jsonrpc": jsonrpc,
+            "id": request_id,
+            "result": {
+                "tools": tools
+            }
+        }
+    elif method == "tools/call":
+        tool_name = params.get("name")
+        arguments = params.get("arguments", {})
+        
+        # Map tool names to MCPTodoAPI methods
+        tool_map = {
+            "list_available_tasks": lambda: MCPTodoAPI.list_available_tasks(
+                arguments.get("agent_type", "implementation"),
+                arguments.get("project_id"),
+                arguments.get("limit", 10)
+            ),
+            "reserve_task": lambda: MCPTodoAPI.reserve_task(
+                arguments.get("task_id"),
+                arguments.get("agent_id")
+            ),
+            "complete_task": lambda: MCPTodoAPI.complete_task(
+                arguments.get("task_id"),
+                arguments.get("agent_id"),
+                arguments.get("notes"),
+                arguments.get("actual_hours"),
+                arguments.get("followup_title"),
+                arguments.get("followup_task_type"),
+                arguments.get("followup_instruction"),
+                arguments.get("followup_verification")
+            ),
+            "create_task": lambda: MCPTodoAPI.create_task(
+                arguments.get("title"),
+                arguments.get("task_type"),
+                arguments.get("task_instruction"),
+                arguments.get("verification_instruction"),
+                arguments.get("agent_id"),
+                project_id=arguments.get("project_id"),
+                parent_task_id=arguments.get("parent_task_id"),
+                relationship_type=arguments.get("relationship_type"),
+                notes=arguments.get("notes"),
+                priority=arguments.get("priority"),
+                estimated_hours=arguments.get("estimated_hours"),
+                due_date=arguments.get("due_date")
+            ),
+            "get_agent_performance": lambda: MCPTodoAPI.get_agent_performance(
+                arguments.get("agent_id"),
+                arguments.get("task_type")
+            ),
+            "unlock_task": lambda: MCPTodoAPI.unlock_task(
+                arguments.get("task_id"),
+                arguments.get("agent_id")
+            ),
+            "bulk_unlock_tasks": lambda: MCPTodoAPI.bulk_unlock_tasks(
+                arguments.get("task_ids"),
+                arguments.get("agent_id")
+            ),
+            "query_tasks": lambda: {"tasks": MCPTodoAPI.query_tasks(
+                project_id=arguments.get("project_id"),
+                task_type=arguments.get("task_type"),
+                task_status=arguments.get("task_status"),
+                agent_id=arguments.get("agent_id"),
+                priority=arguments.get("priority"),
+                tag_id=arguments.get("tag_id"),
+                tag_ids=arguments.get("tag_ids"),
+                order_by=arguments.get("order_by"),
+                limit=arguments.get("limit", 100)
+            )},
+            "add_task_update": lambda: MCPTodoAPI.add_task_update(
+                arguments.get("task_id"),
+                arguments.get("agent_id"),
+                arguments.get("content"),
+                arguments.get("update_type"),
+                arguments.get("metadata")
+            ),
+            "get_task_context": lambda: MCPTodoAPI.get_task_context(
+                arguments.get("task_id")
+            ),
+            "search_tasks": lambda: {"tasks": MCPTodoAPI.search_tasks(
+                arguments.get("query", ""),
+                arguments.get("limit", 100)
+            )},
+            "verify_task": lambda: MCPTodoAPI.verify_task(
+                arguments.get("task_id"),
+                arguments.get("agent_id"),
+                arguments.get("notes")
+            ),
+            "create_tag": lambda: MCPTodoAPI.create_tag(
+                arguments.get("name")
+            ),
+            "query_stale_tasks": lambda: MCPTodoAPI.query_stale_tasks(
+                arguments.get("hours")
+            )
+        }
+        
+        if tool_name not in tool_map:
+            return {
+                "jsonrpc": jsonrpc,
+                "id": request_id,
+                "error": {
+                    "code": -32601,
+                    "message": f"Method not found: {tool_name}"
+                }
+            }
+        
+        try:
+            result = tool_map[tool_name]()
+            import json
+            # Ensure result is a dict (some methods return lists)
+            if not isinstance(result, dict):
+                result = {"result": result}
+            return {
+                "jsonrpc": jsonrpc,
+                "id": request_id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": json.dumps(result)
+                        }
+                    ]
+                }
+            }
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            return {
+                "jsonrpc": jsonrpc,
+                "id": request_id,
+                "error": {
+                    "code": -32603,
+                    "message": f"Internal error: {str(e)}",
+                    "data": error_details
+                }
+            }
+    else:
+        return {
+            "jsonrpc": jsonrpc,
+            "id": request_id,
+            "error": {
+                "code": -32601,
+                "message": f"Method not found: {method}"
+            }
+        }
+
+
+def handle_sse_request(request: Dict[str, Any]) -> str:
+    """
+    Handle SSE request (returns JSON-RPC response as SSE format string).
+    
+    Args:
+        request: Request dictionary (may contain method, params, etc.)
+        
+    Returns:
+        SSE-formatted string with JSON-RPC response
+    """
+    # For POST requests with JSON-RPC, process as JSON-RPC
+    if "jsonrpc" in request or "method" in request:
+        result = handle_jsonrpc_request(request)
+        import json
+        return f"data: {json.dumps(result)}\n\n"
+    else:
+        # For GET requests or simple method requests
+        method = request.get("method", "list_functions")
+        if method == "list_functions":
+            import json
+            response = {
+                "jsonrpc": "2.0",
+                "id": None,
+                "result": {
+                    "functions": [f["name"] for f in MCP_FUNCTIONS]
+                }
+            }
+            return f"data: {json.dumps(response)}\n\n"
+        else:
+            import json
+            response = {
+                "jsonrpc": "2.0",
+                "id": None,
+                "error": {
+                    "code": -32601,
+                    "message": f"Method not found: {method}"
+                }
+            }
+            return f"data: {json.dumps(response)}\n\n"
 

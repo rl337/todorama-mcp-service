@@ -2054,11 +2054,19 @@ class TodoDatabase:
         self,
         cursor: sqlite3.Cursor,
         blocker_task_id: int,
-        blocked_task_id: int
+        blocked_task_id: int,
+        exclude_parent_task_id: Optional[int] = None,
+        exclude_child_task_id: Optional[int] = None
     ) -> bool:
         """
         Check if creating a blocked_by relationship from blocked_task_id to blocker_task_id
         would create a circular dependency.
+        
+        Args:
+            blocker_task_id: The task that would block blocked_task_id
+            blocked_task_id: The task that would be blocked by blocker_task_id
+            exclude_parent_task_id: Optional parent task ID to exclude from the check (the relationship being created)
+            exclude_child_task_id: Optional child task ID to exclude from the check (the relationship being created)
         
         Returns True if a circular dependency would be created, False otherwise.
         """
@@ -2078,26 +2086,68 @@ class TodoDatabase:
             visited.add(current_task_id)
             
             # Find all tasks that this task is blocked by
-            cursor.execute("""
-                SELECT child_task_id
-                FROM task_relationships
-                WHERE parent_task_id = ? AND relationship_type = 'blocked_by'
-            """, (current_task_id,))
+            # For blocked_by: parent is blocked by child
+            # So if A is blocked by B: parent=A, child=B means B blocks A
+            # To find what blocks current_task_id, look for relationships where
+            # parent_task_id = current_task_id, which gives us child_task_id (the blocker)
+            # Exclude the relationship we're checking if provided
+            if exclude_parent_task_id is not None and exclude_child_task_id is not None:
+                cursor.execute("""
+                    SELECT child_task_id
+                    FROM task_relationships
+                    WHERE parent_task_id = ? AND relationship_type = 'blocked_by'
+                    AND NOT (parent_task_id = ? AND child_task_id = ?)
+                """, (current_task_id, exclude_parent_task_id, exclude_child_task_id))
+            else:
+                cursor.execute("""
+                    SELECT child_task_id
+                    FROM task_relationships
+                    WHERE parent_task_id = ? AND relationship_type = 'blocked_by'
+                """, (current_task_id,))
             
             blocking_tasks = [row[0] for row in cursor.fetchall()]
             
+            # Also find what current_task_id blocks (tasks that are blocked by current_task_id)
+            # Look for relationships where child_task_id = current_task_id
+            # This gives us parent_task_id (tasks blocked by current_task_id)
+            if exclude_parent_task_id is not None and exclude_child_task_id is not None:
+                cursor.execute("""
+                    SELECT parent_task_id
+                    FROM task_relationships
+                    WHERE child_task_id = ? AND relationship_type = 'blocked_by'
+                    AND NOT (parent_task_id = ? AND child_task_id = ?)
+                """, (current_task_id, exclude_parent_task_id, exclude_child_task_id))
+            else:
+                cursor.execute("""
+                    SELECT parent_task_id
+                    FROM task_relationships
+                    WHERE child_task_id = ? AND relationship_type = 'blocked_by'
+                """, (current_task_id,))
+            
+            # Tasks blocked by current_task_id (current_task_id blocks these)
+            blocked_by_current = [row[0] for row in cursor.fetchall()]
+            
             # Also check for "blocking" relationships (which are inverse of blocked_by)
-            cursor.execute("""
-                SELECT parent_task_id
-                FROM task_relationships
-                WHERE child_task_id = ? AND relationship_type = 'blocking'
-            """, (current_task_id,))
+            # Exclude the relationship we're checking if provided
+            if exclude_parent_task_id is not None and exclude_child_task_id is not None:
+                cursor.execute("""
+                    SELECT parent_task_id
+                    FROM task_relationships
+                    WHERE child_task_id = ? AND relationship_type = 'blocking'
+                    AND NOT (parent_task_id = ? AND child_task_id = ?)
+                """, (current_task_id, exclude_parent_task_id, exclude_child_task_id))
+            else:
+                cursor.execute("""
+                    SELECT parent_task_id
+                    FROM task_relationships
+                    WHERE child_task_id = ? AND relationship_type = 'blocking'
+                """, (current_task_id,))
             
             # "blocking" relationship means: if A blocks B, then B is blocked_by A
             blocking_from_blocking = [row[0] for row in cursor.fetchall()]
             
-            # Add all blocking tasks to the queue
-            for task_id in blocking_tasks + blocking_from_blocking:
+            # Add all blocking tasks to the queue (what blocks current, and what current blocks)
+            for task_id in blocking_tasks + blocked_by_current + blocking_from_blocking:
                 if task_id not in visited:
                     queue.append(task_id)
         
@@ -2118,25 +2168,101 @@ class TodoDatabase:
         try:
             cursor = conn.cursor()
             
-            # Check for circular dependencies for blocking relationships
-            if relationship_type == "blocked_by":
-                # parent_task_id is blocked by child_task_id
-                # Check if child_task_id (or anything blocking it) can reach parent_task_id
-                if self._check_circular_dependency(cursor, child_task_id, parent_task_id):
-                    raise ValueError(
-                        f"Circular dependency detected: Cannot create blocked_by relationship "
-                        f"from task {parent_task_id} to task {child_task_id}. "
-                        f"Task {child_task_id} (or something blocking it) already blocks task {parent_task_id}."
-                    )
-            elif relationship_type == "blocking":
-                # parent_task_id blocks child_task_id (equivalent to child_task_id is blocked_by parent_task_id)
-                # Check if parent_task_id (or anything blocking it) can reach child_task_id
-                if self._check_circular_dependency(cursor, parent_task_id, child_task_id):
-                    raise ValueError(
-                        f"Circular dependency detected: Cannot create blocking relationship "
-                        f"from task {parent_task_id} to task {child_task_id}. "
-                        f"Task {parent_task_id} (or something blocking it) already blocks task {child_task_id}."
-                    )
+            # Check for circular dependencies for blocking relationships FIRST
+            # This ensures we catch circular dependencies before checking if relationship exists
+            # We need to check BEFORE looking for existing relationships to avoid false positives
+            # Exclude the relationship we're checking from the circular dependency check to avoid false positives
+            if relationship_type in ("blocked_by", "blocking"):
+                # First, check if the inverse relationship already exists (direct cycle)
+                # If A blocks B exists and we try to create A blocked_by B, that's a direct cycle
+                if relationship_type == "blocked_by":
+                    # Check if the inverse (blocking) relationship exists with same parent/child
+                    # If A blocks B exists and we try to create A blocked_by B, that's a direct cycle
+                    # A blocks B means B is blocked_by A, so A blocked_by B means B blocks A
+                    # But we also need to check if A blocks B exists (same parent/child, different type)
+                    cursor.execute("""
+                        SELECT id FROM task_relationships
+                        WHERE parent_task_id = ? AND child_task_id = ? AND relationship_type = 'blocking'
+                    """, (parent_task_id, child_task_id))
+                    if cursor.fetchone():
+                        raise ValueError(
+                            f"Circular dependency detected: Cannot create blocked_by relationship "
+                            f"from task {parent_task_id} to task {child_task_id}. "
+                            f"Task {parent_task_id} already blocks task {child_task_id} (inverse relationship exists)."
+                        )
+                    # Also check if the inverse (blocking) relationship exists: child blocks parent
+                    cursor.execute("""
+                        SELECT id FROM task_relationships
+                        WHERE parent_task_id = ? AND child_task_id = ? AND relationship_type = 'blocking'
+                    """, (child_task_id, parent_task_id))
+                    if cursor.fetchone():
+                        raise ValueError(
+                            f"Circular dependency detected: Cannot create blocked_by relationship "
+                            f"from task {parent_task_id} to task {child_task_id}. "
+                            f"Task {child_task_id} already blocks task {parent_task_id} (inverse relationship exists)."
+                        )
+                    # Check if child_task_id (or anything blocking it) can reach parent_task_id
+                    # This would create a cycle: parent -> child -> ... -> parent
+                    # Exclude the relationship we're checking to avoid false positives
+                    if self._check_circular_dependency(cursor, child_task_id, parent_task_id, 
+                                                       exclude_parent_task_id=parent_task_id, 
+                                                       exclude_child_task_id=child_task_id):
+                        raise ValueError(
+                            f"Circular dependency detected: Cannot create blocked_by relationship "
+                            f"from task {parent_task_id} to task {child_task_id}. "
+                            f"Task {child_task_id} (or something blocking it) already blocks task {parent_task_id}."
+                        )
+                elif relationship_type == "blocking":
+                    # Check if the inverse (blocked_by) relationship exists with same parent/child
+                    # If A blocked_by B exists and we try to create A blocks B, that's a direct cycle
+                    cursor.execute("""
+                        SELECT id FROM task_relationships
+                        WHERE parent_task_id = ? AND child_task_id = ? AND relationship_type = 'blocked_by'
+                    """, (parent_task_id, child_task_id))
+                    if cursor.fetchone():
+                        raise ValueError(
+                            f"Circular dependency detected: Cannot create blocking relationship "
+                            f"from task {parent_task_id} to task {child_task_id}. "
+                            f"Task {parent_task_id} is already blocked by task {child_task_id} (inverse relationship exists)."
+                        )
+                    # Also check if the inverse (blocked_by) relationship exists: child is blocked_by parent
+                    cursor.execute("""
+                        SELECT id FROM task_relationships
+                        WHERE parent_task_id = ? AND child_task_id = ? AND relationship_type = 'blocked_by'
+                    """, (child_task_id, parent_task_id))
+                    if cursor.fetchone():
+                        raise ValueError(
+                            f"Circular dependency detected: Cannot create blocking relationship "
+                            f"from task {parent_task_id} to task {child_task_id}. "
+                            f"Task {child_task_id} is already blocked by task {parent_task_id} (inverse relationship exists)."
+                        )
+                    # Check if parent_task_id (or anything blocking it) can reach child_task_id
+                    # This would create a cycle: parent -> child -> ... -> parent
+                    # Exclude the relationship we're checking to avoid false positives
+                    if self._check_circular_dependency(cursor, parent_task_id, child_task_id,
+                                                       exclude_parent_task_id=parent_task_id,
+                                                       exclude_child_task_id=child_task_id):
+                        raise ValueError(
+                            f"Circular dependency detected: Cannot create blocking relationship "
+                            f"from task {parent_task_id} to task {child_task_id}. "
+                            f"Task {parent_task_id} (or something blocking it) already blocks task {child_task_id}."
+                        )
+            
+            # Check if relationship already exists (idempotent behavior)
+            # Only check after circular dependency validation passes
+            cursor.execute("""
+                SELECT id FROM task_relationships
+                WHERE parent_task_id = ? AND child_task_id = ? AND relationship_type = ?
+            """, (parent_task_id, child_task_id, relationship_type))
+            existing = cursor.fetchone()
+            
+            # If relationship already exists and passed circular dependency check, return existing ID
+            if existing:
+                # Relationship already exists, return existing ID (don't record in history again)
+                rel_id = existing[0]
+                logger.info(f"Relationship {relationship_type} from task {parent_task_id} to task {child_task_id} already exists (ID: {rel_id})")
+                conn.commit()
+                return rel_id
             
             rel_id = self._execute_insert(cursor, """
                 INSERT INTO task_relationships (parent_task_id, child_task_id, relationship_type)

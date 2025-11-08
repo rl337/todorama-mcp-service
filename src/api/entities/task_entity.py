@@ -99,6 +99,89 @@ class TaskEntity(BaseEntity):
         try:
             # Use database query_tasks method with filters
             filters = filters or {}
+            
+            # Validate enum values
+            valid_task_types = ["concrete", "abstract", "epic"]
+            valid_task_statuses = ["available", "in_progress", "complete", "blocked", "cancelled"]
+            valid_priorities = ["low", "medium", "high", "critical"]
+            valid_order_by = ["priority", "priority_asc"]
+            
+            if filters.get("task_type") and filters["task_type"] not in valid_task_types:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid task_type '{filters['task_type']}'. Must be one of: {', '.join(valid_task_types)}"
+                )
+            
+            if filters.get("task_status") and filters["task_status"] not in valid_task_statuses:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid task_status '{filters['task_status']}'. Must be one of: {', '.join(valid_task_statuses)}"
+                )
+            
+            if filters.get("priority") and filters["priority"] not in valid_priorities:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid priority '{filters['priority']}'. Must be one of: {', '.join(valid_priorities)}"
+                )
+            
+            if filters.get("order_by") and filters["order_by"] not in valid_order_by:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid order_by '{filters['order_by']}'. Must be one of: {', '.join(valid_order_by)}"
+                )
+            
+            # Validate numeric values (must be positive)
+            if filters.get("project_id") is not None:
+                project_id = filters["project_id"]
+                try:
+                    project_id = int(project_id)
+                    if project_id <= 0:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"project_id must be a positive integer, got {project_id}"
+                        )
+                    filters["project_id"] = project_id
+                except (ValueError, TypeError):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"project_id must be an integer, got {project_id}"
+                    )
+            
+            if filters.get("tag_id") is not None:
+                tag_id = filters["tag_id"]
+                try:
+                    tag_id = int(tag_id)
+                    if tag_id <= 0:
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"tag_id must be a positive integer, got {tag_id}"
+                        )
+                    filters["tag_id"] = tag_id
+                except (ValueError, TypeError):
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"tag_id must be an integer, got {tag_id}"
+                    )
+            
+            # Validate tag_ids format (comma-separated integers)
+            if filters.get("tag_ids"):
+                tag_ids_str = filters["tag_ids"]
+                if isinstance(tag_ids_str, str):
+                    try:
+                        tag_ids_list = [int(tid.strip()) for tid in tag_ids_str.split(",") if tid.strip()]
+                        for tid in tag_ids_list:
+                            if tid <= 0:
+                                raise HTTPException(
+                                    status_code=400,
+                                    detail=f"Invalid tag_id '{tid}' in tag_ids. All tag IDs must be positive integers"
+                                )
+                        filters["tag_ids"] = tag_ids_list
+                    except ValueError as e:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Invalid tag_ids format '{tag_ids_str}'. Must be comma-separated positive integers (e.g., '1,2,3'). Error: {str(e)}"
+                        )
+            
             tasks = self.db.query_tasks(
                 task_type=filters.get("task_type"),
                 task_status=filters.get("task_status"),
@@ -107,9 +190,13 @@ class TaskEntity(BaseEntity):
                 priority=filters.get("priority"),
                 order_by=filters.get("order_by"),
                 search=filters.get("search"),
-                limit=filters.get("limit", 100)
+                limit=filters.get("limit", 100),
+                tag_id=filters.get("tag_id"),
+                tag_ids=filters.get("tag_ids")
             )
             return [dict(task) for task in tasks]
+        except HTTPException:
+            raise
         except Exception as e:
             self._handle_error(e, "Failed to list tasks")
     
@@ -164,6 +251,10 @@ class TaskEntity(BaseEntity):
                     updates.append("notes = ?")
                     params.append(task_update.notes)
                 
+                if task_update.priority is not None:
+                    updates.append("priority = ?")
+                    params.append(task_update.priority)
+                
                 if updates:
                     updates.append("updated_at = CURRENT_TIMESTAMP")
                     params.append(task_id)
@@ -212,12 +303,23 @@ class TaskEntity(BaseEntity):
         Body: {"task_id": 123, "agent_id": "agent-1"}
         """
         try:
+            # Validate agent_id is not empty or whitespace
+            if not agent_id or not agent_id.strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail=[{
+                        "loc": ["body", "agent_id"],
+                        "msg": "agent_id cannot be empty or whitespace",
+                        "type": "value_error"
+                    }]
+                )
+            
             # Check if task exists first
             task = self.db.get_task(task_id)
             if not task:
                 raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
             
-            success = self.db.lock_task(task_id, agent_id)
+            success = self.db.lock_task(task_id, agent_id.strip())
             if not success:
                 raise HTTPException(status_code=409, detail="Task is already locked")
             task = self.db.get_task(task_id)
@@ -249,9 +351,23 @@ class TaskEntity(BaseEntity):
         Body: {"task_id": 123, "agent_id": "agent-1", "actual_hours": 2.5, "notes": "Done"}
         """
         try:
+            # Validate actual_hours if provided (must be positive)
+            if actual_hours is not None:
+                if actual_hours <= 0:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=[{
+                            "loc": ["body", "actual_hours"],
+                            "msg": "actual_hours must be a positive number",
+                            "type": "value_error"
+                        }]
+                    )
+            
             self.db.complete_task(task_id, agent_id, actual_hours=actual_hours, notes=notes)
             task = self.db.get_task(task_id)
             return dict(task)
+        except HTTPException:
+            raise
         except Exception as e:
             self._handle_error(e, "Failed to complete task")
     
@@ -441,4 +557,167 @@ class TaskEntity(BaseEntity):
             }
         except Exception as e:
             self._handle_error(e, "Failed to unlock stale tasks")
+    
+    def import_json(self, format: str = "json", **kwargs) -> Dict[str, Any]:
+        """
+        Import tasks from JSON format.
+        
+        POST /api/Task/import/json
+        Body: {"tasks": [...], "agent_id": "...", "project_id": ...}
+        """
+        try:
+            tasks = kwargs.get("tasks", [])
+            agent_id = kwargs.get("agent_id") or (self.auth_info.get("agent_id") if self.auth_info else "system")
+            project_id = kwargs.get("project_id")
+            
+            imported = []
+            errors = []
+            
+            for task_data in tasks:
+                try:
+                    task_id = self.db.create_task(
+                        title=task_data["title"],
+                        task_type=task_data["task_type"],
+                        task_instruction=task_data["task_instruction"],
+                        verification_instruction=task_data["verification_instruction"],
+                        agent_id=agent_id,
+                        project_id=project_id or task_data.get("project_id"),
+                        priority=task_data.get("priority"),
+                        estimated_hours=task_data.get("estimated_hours"),
+                        notes=task_data.get("notes"),
+                        due_date=task_data.get("due_date")
+                    )
+                    imported.append(task_id)
+                except Exception as e:
+                    errors.append({"task": task_data.get("title", "Unknown"), "error": str(e)})
+            
+            return {
+                "success": True,
+                "created": len(imported),
+                "skipped": 0,
+                "error_count": len(errors),
+                "imported_count": len(imported),
+                "task_ids": imported,  # Alias for imported_task_ids
+                "imported_task_ids": imported,
+                "errors": errors
+            }
+        except Exception as e:
+            self._handle_error(e, "Failed to import tasks from JSON")
+    
+    def import_csv(self, format: str = "csv", **kwargs) -> Dict[str, Any]:
+        """
+        Import tasks from CSV format.
+        
+        POST /api/Task/import/csv
+        Body: CSV content as text
+        """
+        import csv
+        import io
+        from datetime import datetime
+        
+        try:
+            # CSV content should be in kwargs as "content" or "csv_data"
+            csv_content = kwargs.get("content") or kwargs.get("csv_data") or ""
+            csv_file = io.StringIO(csv_content)
+            reader = csv.DictReader(csv_file)
+            
+            agent_id = kwargs.get("agent_id") or (self.auth_info.get("agent_id") if self.auth_info else "system")
+            imported = []
+            errors = []
+            
+            for row in reader:
+                try:
+                    task_id = self.db.create_task(
+                        title=row.get("title", ""),
+                        task_type=row.get("task_type", "concrete"),
+                        task_instruction=row.get("task_instruction", ""),
+                        verification_instruction=row.get("verification_instruction", ""),
+                        agent_id=agent_id,
+                        project_id=int(row["project_id"]) if row.get("project_id") else None,
+                        priority=row.get("priority"),
+                        estimated_hours=float(row["estimated_hours"]) if row.get("estimated_hours") else None,
+                        notes=row.get("notes"),
+                        due_date=datetime.fromisoformat(row["due_date"]) if row.get("due_date") else None
+                    )
+                    imported.append(task_id)
+                except Exception as e:
+                    errors.append({"row": row.get("title", "Unknown"), "error": str(e)})
+            
+            return {
+                "success": True,
+                "created": len(imported),
+                "skipped": 0,
+                "error_count": len(errors),
+                "imported_count": len(imported),
+                "imported_task_ids": imported,
+                "errors": errors
+            }
+        except Exception as e:
+            self._handle_error(e, "Failed to import tasks from CSV")
+    
+    def bulk_complete(self, **kwargs) -> Dict[str, Any]:
+        """
+        Bulk complete tasks.
+        
+        POST /api/Task/bulk/complete
+        Body: {"task_ids": [1, 2, 3], "agent_id": "..."}
+        """
+        try:
+            task_ids = kwargs.get("task_ids", [])
+            agent_id = kwargs.get("agent_id") or (self.auth_info.get("agent_id") if self.auth_info else "system")
+            result = self.db.bulk_complete_tasks(task_ids, agent_id)
+            return result
+        except Exception as e:
+            self._handle_error(e, "Failed to bulk complete tasks")
+    
+    def bulk_assign(self, **kwargs) -> Dict[str, Any]:
+        """
+        Bulk assign tasks to an agent.
+        
+        POST /api/Task/bulk/assign
+        Body: {"task_ids": [1, 2, 3], "agent_id": "..."}
+        """
+        try:
+            task_ids = kwargs.get("task_ids", [])
+            agent_id = kwargs.get("agent_id") or (self.auth_info.get("agent_id") if self.auth_info else "system")
+            result = self.db.bulk_assign_tasks(task_ids, agent_id)
+            return result
+        except Exception as e:
+            self._handle_error(e, "Failed to bulk assign tasks")
+    
+    def bulk_update_status(self, **kwargs) -> Dict[str, Any]:
+        """
+        Bulk update task status.
+        
+        POST /api/Task/bulk/update-status
+        Body: {"task_ids": [1, 2, 3], "status": "complete", "agent_id": "..."}
+        """
+        try:
+            task_ids = kwargs.get("task_ids", [])
+            status = kwargs.get("status")
+            agent_id = kwargs.get("agent_id") or (self.auth_info.get("agent_id") if self.auth_info else "system")
+            result = self.db.bulk_update_status(task_ids, status, agent_id)
+            return result
+        except Exception as e:
+            self._handle_error(e, "Failed to bulk update status")
+    
+    def bulk_delete(self, **kwargs) -> Dict[str, Any]:
+        """
+        Bulk delete tasks.
+        
+        POST /api/Task/bulk/delete
+        Body: {"task_ids": [1, 2, 3], "agent_id": "...", "confirmation": true}
+        """
+        try:
+            task_ids = kwargs.get("task_ids", [])
+            agent_id = kwargs.get("agent_id") or (self.auth_info.get("agent_id") if self.auth_info else "system")
+            confirmation = kwargs.get("confirmation", False)
+            if not confirmation:
+                raise HTTPException(status_code=400, detail="Confirmation required for bulk delete")
+            result = self.db.bulk_delete_tasks(task_ids, agent_id)
+            return result
+        except HTTPException:
+            raise
+        except Exception as e:
+            self._handle_error(e, "Failed to bulk delete tasks")
 

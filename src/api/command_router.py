@@ -103,9 +103,9 @@ async def entity_export(
         return response_context.render_server_error(f"Internal server error: {str(e)}")
 
 
-@router.post("/{entity_name}/{action}")
-@router.get("/{entity_name}/{action}")
-@router.patch("/{entity_name}/{action}")
+@router.post("/{entity_name}/{action:path}")
+@router.get("/{entity_name}/{action:path}")
+@router.patch("/{entity_name}/{action:path}")
 async def entity_command(
     entity_name: str,
     action: str,
@@ -141,37 +141,99 @@ async def entity_command(
         else:
             entity = entity_class(db, auth_info=auth)
         
-        # Handle actions with sub-paths like "export/json" or "export/csv"
-        # Extract format from action if it contains a slash
+        # Handle actions with sub-paths like "export/json", "import/json", "bulk/complete"
+        # Extract sub-path parts from action if it contains a slash
         actual_action = action
-        format_param = None
+        sub_path = None
         if "/" in action:
             parts = action.split("/", 1)
             actual_action = parts[0]
-            format_param = parts[1] if len(parts) > 1 else None
+            sub_path = parts[1] if len(parts) > 1 else None
         
-        # Convert hyphens to underscores for method names (e.g., "approaching-deadline" -> "approaching_deadline")
-        method_name = actual_action.replace("-", "_")
-        
-        # Get action method - try both with and without underscore conversion
-        if hasattr(entity, method_name):
-            action_method = getattr(entity, method_name)
-            actual_action = method_name  # Use the method name for routing logic
-        elif hasattr(entity, actual_action):
-            action_method = getattr(entity, actual_action)
+        # Special handling for actions with sub-paths that map to specific methods
+        # For import/json -> import_json, bulk/complete -> bulk_complete, etc.
+        if actual_action == "import" and sub_path:
+            # Directly call import_json or import_csv
+            import_method_name = f"import_{sub_path}"
+            if hasattr(entity, import_method_name):
+                # Will be handled in POST/PATCH section
+                action_method = None  # Special case, handled separately
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Import format '{sub_path}' not supported. Use 'json' or 'csv'."
+                )
+        elif actual_action == "bulk" and sub_path:
+            # Directly call bulk_complete, bulk_assign, etc.
+            bulk_method_name = f"bulk_{sub_path.replace('-', '_')}"
+            if hasattr(entity, bulk_method_name):
+                # Will be handled in POST/PATCH section
+                action_method = None  # Special case, handled separately
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Bulk action '{sub_path}' not found on entity '{entity_name}'"
+                )
         else:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Action '{action}' not found on entity '{entity_name}'. Available actions: {[m for m in dir(entity) if not m.startswith('_') and callable(getattr(entity, m))]}"
-            )
+            # Convert hyphens to underscores for method names (e.g., "approaching-deadline" -> "approaching_deadline")
+            method_name = actual_action.replace("-", "_")
+            
+            # Get action method - try both with and without underscore conversion
+            if hasattr(entity, method_name):
+                action_method = getattr(entity, method_name)
+                actual_action = method_name  # Use the method name for routing logic
+            elif hasattr(entity, actual_action):
+                action_method = getattr(entity, actual_action)
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Action '{action}' not found on entity '{entity_name}'. Available actions: {[m for m in dir(entity) if not m.startswith('_') and callable(getattr(entity, m))]}"
+                )
         
         # Parse request body for POST/PATCH or query params for GET
+        # This must be outside the else block so it executes for import/bulk actions too
         if request.method in ["POST", "PATCH"]:
-            try:
-                body = await request.json()
-            except Exception:
-                # If no body, use empty dict
-                body = {}
+            # Check if this is a multipart/form-data request (for CSV import)
+            content_type = request.headers.get("content-type", "")
+            if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+                # For CSV import, parse form data
+                from fastapi import Form, File, UploadFile
+                try:
+                    form = await request.form()
+                    body = {}
+                    # Extract file content if present
+                    if "file" in form:
+                        file = form["file"]
+                        # Handle UploadFile or SpooledTemporaryFile
+                        if hasattr(file, "read"):
+                            file_content = await file.read()
+                            if isinstance(file_content, bytes):
+                                body["content"] = file_content.decode("utf-8")
+                            else:
+                                body["content"] = file_content
+                        elif hasattr(file, "file"):
+                            # SpooledTemporaryFile
+                            file.file.seek(0)
+                            body["content"] = file.file.read().decode("utf-8")
+                        else:
+                            body["content"] = str(file)
+                    # Extract other form fields
+                    for key, value in form.items():
+                        if key != "file":
+                            body[key] = value
+                except Exception as e:
+                    # If form parsing fails, try JSON
+                    try:
+                        body = await request.json()
+                    except Exception:
+                        body = {}
+            else:
+                try:
+                    body = await request.json()
+                except Exception:
+                    # If no body, use empty dict
+                    body = {}
+            
             # For PATCH on "get" action, treat as update
             if request.method == "PATCH" and actual_action == "get":
                 # PATCH /api/Task/get?task_id=123 with body should update the task
@@ -199,9 +261,25 @@ async def entity_command(
                         status_code=400,
                         detail="task_id parameter required for PATCH /api/{entity_name}/get"
                     )
-            else:
+            elif actual_action == "import" and sub_path:
+                # For import, call the specific import method (import_json or import_csv)
+                import_method_name = f"import_{sub_path}"
+                import_method = getattr(entity, import_method_name)
+                result = import_method(format=sub_path, **body)
+            elif actual_action == "bulk" and sub_path:
+                # For bulk operations, pass the sub-action and body
+                # Convert sub_path like "complete" to method call
+                bulk_method_name = f"bulk_{sub_path.replace('-', '_')}"
+                bulk_method = getattr(entity, bulk_method_name)
+                result = bulk_method(**body)
+            elif action_method:
                 # Call method with body as kwargs
                 result = action_method(**body)
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Action '{action}' not properly handled"
+                )
         else:
             # GET request - use query params
             query_params = dict(request.query_params)
@@ -229,10 +307,12 @@ async def entity_command(
                 else:
                     result = action_method(filters=params)
             elif actual_action == "search":
-                result = action_method(query=params.get("query", ""), limit=int(params.get("limit", 100)))
-            elif actual_action == "export" and format_param:
+                # Accept both 'q' and 'query' parameters for search
+                query = params.get("q") or params.get("query", "")
+                result = action_method(query=query, limit=int(params.get("limit", 100)))
+            elif actual_action == "export" and sub_path:
                 # For export, pass format and filters
-                result = action_method(format=format_param, filters=params)
+                result = action_method(format=sub_path, filters=params)
             elif actual_action == "overdue":
                 result = action_method(filters=params)
             elif actual_action == "approaching-deadline" or actual_action == "approaching_deadline":
@@ -248,6 +328,12 @@ async def entity_command(
         # Determine response strategy based on action type
         # Create actions return 201, others return 200
         # If result is already a Response object (e.g., from export), return it directly
+        # Ensure result is defined (should be set in POST/PATCH or GET branches above)
+        if 'result' not in locals():
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal error: result not set for action '{action}'"
+            )
         if isinstance(result, Response):
             return result
         elif actual_action == "create":

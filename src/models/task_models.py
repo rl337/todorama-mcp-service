@@ -68,6 +68,7 @@ class TaskUpdate(BaseModel):
     task_status: Optional[str] = None
     verification_status: Optional[str] = None
     notes: Optional[str] = None
+    priority: Optional[str] = None
     
     @field_validator('task_status')
     @classmethod
@@ -89,6 +90,17 @@ class TaskUpdate(BaseModel):
         valid_statuses = ["unverified", "verified"]
         if v not in valid_statuses:
             raise ValueError(f"Invalid verification_status '{v}'. Must be one of: {', '.join(valid_statuses)}")
+        return v
+    
+    @field_validator('priority')
+    @classmethod
+    def validate_priority(cls, v: Optional[str]) -> Optional[str]:
+        """Validate priority enum."""
+        if v is None:
+            return v
+        valid_priorities = ["low", "medium", "high", "critical"]
+        if v not in valid_priorities:
+            raise ValueError(f"Invalid priority '{v}'. Must be one of: {', '.join(valid_priorities)}")
         return v
 
 
