@@ -2,9 +2,14 @@
 Backup entity for backup and restore operations.
 """
 from typing import Dict, Any, Optional
-from fastapi import HTTPException
-from todorama.api.entities.base_entity import BaseEntity
 import logging
+
+from todorama.adapters.http_framework import HTTPFrameworkAdapter
+from todorama.api.entities.base_entity import BaseEntity
+
+# Initialize adapter
+http_adapter = HTTPFrameworkAdapter()
+HTTPException = http_adapter.HTTPException
 
 logger = logging.getLogger(__name__)
 

@@ -3,9 +3,13 @@ Project entity with command pattern methods.
 All project operations are exposed as methods that can be called via /api/Project/<method>
 """
 from typing import Dict, Any, List, Optional
-from fastapi import HTTPException
 
+from todorama.adapters.http_framework import HTTPFrameworkAdapter
 from todorama.api.entities.base_entity import BaseEntity
+
+# Initialize adapter
+http_adapter = HTTPFrameworkAdapter()
+HTTPException = http_adapter.HTTPException
 from todorama.models.project_models import ProjectCreate, ProjectResponse
 from todorama.services.project_service import ProjectService
 

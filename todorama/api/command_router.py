@@ -2,11 +2,10 @@
 Command pattern router for /api/<Entity>/<action> endpoints.
 Dynamically routes to entity methods based on URL path.
 """
-from fastapi import APIRouter, Request, Depends, Query, Body, HTTPException
-from fastapi.responses import Response
 from typing import Dict, Any, Optional, List
 import logging
 
+from todorama.adapters.http_framework import HTTPFrameworkAdapter
 from todorama.api.entities.task_entity import TaskEntity
 from todorama.api.entities.project_entity import ProjectEntity
 from todorama.api.entities.backup_entity import BackupEntity
@@ -16,6 +15,15 @@ from todorama.api.response_strategy import response_context
 
 logger = logging.getLogger(__name__)
 
+# Initialize adapter
+http_adapter = HTTPFrameworkAdapter()
+Request = http_adapter.Request
+Depends = http_adapter.Depends
+Query = http_adapter.Query
+Body = http_adapter.Body
+HTTPException = http_adapter.HTTPException
+Response = http_adapter.Response
+
 # Map entity names to entity classes
 ENTITY_MAP = {
     "Task": TaskEntity,
@@ -23,8 +31,10 @@ ENTITY_MAP = {
     "Backup": BackupEntity,
 }
 
-# Initialize router with /api prefix
-router = APIRouter(prefix="/api")
+# Initialize router with /api prefix using adapter
+# Expose underlying router for FastAPI compatibility
+router_adapter = http_adapter.create_router(prefix="/api")
+router = router_adapter.router
 
 
 def get_entity_class(entity_name: str):

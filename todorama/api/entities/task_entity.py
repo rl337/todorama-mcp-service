@@ -3,11 +3,15 @@ Task entity with command pattern methods.
 All task operations are exposed as methods that can be called via /api/Task/<method>
 """
 from typing import Dict, Any, List, Optional
-from fastapi import HTTPException
 from pydantic import ValidationError
 from datetime import datetime, UTC
 
+from todorama.adapters.http_framework import HTTPFrameworkAdapter
 from todorama.api.entities.base_entity import BaseEntity
+
+# Initialize adapter
+http_adapter = HTTPFrameworkAdapter()
+HTTPException = http_adapter.HTTPException
 from todorama.models.task_models import TaskCreate, TaskUpdate, TaskResponse
 from todorama.services.task_service import TaskService
 from todorama.services.import_service import ImportService

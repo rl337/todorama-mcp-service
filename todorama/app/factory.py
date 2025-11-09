@@ -11,10 +11,7 @@ import sqlite3
 from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any
 
-from fastapi import FastAPI, HTTPException, Request, Body
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, Response
-from fastapi.exceptions import RequestValidationError
+from todorama.adapters.http_framework import HTTPFrameworkAdapter
 from prometheus_client import CONTENT_TYPE_LATEST
 from strawberry.fastapi import GraphQLRouter
 
@@ -32,6 +29,18 @@ from todorama.models import RelationshipCreate
 
 # Import service container (handles all initialization)
 from todorama.dependencies.services import get_services
+
+# Initialize HTTP framework adapter
+http_adapter = HTTPFrameworkAdapter()
+FastAPI = http_adapter.FastAPI
+HTTPException = http_adapter.HTTPException
+Request = http_adapter.Request
+Body = http_adapter.Body
+StaticFiles = http_adapter.StaticFiles
+HTMLResponse = http_adapter.HTMLResponse
+JSONResponse = http_adapter.JSONResponse
+Response = http_adapter.Response
+RequestValidationError = http_adapter.RequestValidationError
 
 
 def setup_logging():
@@ -85,8 +94,9 @@ def create_signal_handler(shutdown_event: asyncio.Event):
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app):
     """Manage application lifespan with graceful shutdown."""
+    # FastAPI passes the app instance directly, not the adapter
     # Startup
     logger = logging.getLogger(__name__)
     logger.info("Application starting up...")
@@ -151,12 +161,12 @@ async def lifespan(app: FastAPI):
     logger.info("Shutdown complete")
 
 
-def create_app() -> FastAPI:
+def create_app():
     """
     Create and configure the FastAPI application.
     
     Returns:
-        Configured FastAPI app instance ready to run.
+        Configured FastAPI app instance ready to run (wrapped in adapter).
     """
     # Setup logging first (must be done before creating logger)
     setup_logging()
@@ -176,13 +186,14 @@ def create_app() -> FastAPI:
             # Signal handlers may not be available in all contexts (e.g., tests)
             pass
     
-    # Create FastAPI app with lifespan
-    app = FastAPI(
+    # Create FastAPI app with lifespan using adapter
+    app_adapter = http_adapter.create_app(
         title="TODO Service",
         description="Task management service for AI agents",
         version="0.1.0",
         lifespan=lifespan
     )
+    app = app_adapter.app  # Get underlying FastAPI app for middleware/setup
     
     # Setup middleware (includes MetricsMiddleware, RateLimitMiddleware, SecurityHeadersMiddleware)
     setup_middleware(app)
@@ -193,16 +204,17 @@ def create_app() -> FastAPI:
     # Register command pattern router (minimal FastAPI usage)
     # All API routes are now under /api/<Entity>/<action>
     # Include all_routes FIRST so specific routes like /api/Task/import/json are handled before command router
-    app.include_router(all_routes_router)
-    app.include_router(command_router)
-    app.include_router(mcp_router)
+    # Use adapter's include_router to handle adapter-wrapped routers
+    app_adapter.include_router(all_routes_router)
+    app_adapter.include_router(command_router)
+    app_adapter.include_router(mcp_router)
     
     # Add GraphQL router
     graphql_app = GraphQLRouter(schema)
     app.include_router(graphql_app, prefix="/graphql")
     
     # Relationships endpoint
-    @app.post("/relationships", status_code=201)
+    @app_adapter.post("/relationships", status_code=201)
     async def create_relationship(
         relationship_data: Dict[str, Any] = Body(...),
         request: Request = None
@@ -314,10 +326,10 @@ def create_app() -> FastAPI:
     # Mount static files directory for web interface
     static_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
     if os.path.exists(static_dir):
-        app.mount("/static", StaticFiles(directory=static_dir), name="static")
+        app_adapter.mount("/static", StaticFiles(directory=static_dir), name="static")
     
     # Root endpoint - serve web interface
-    @app.get("/", response_class=HTMLResponse)
+    @app_adapter.get("/", response_class=HTMLResponse)
     async def root():
         """Serve the web-based task management interface."""
         static_dir_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
@@ -333,7 +345,7 @@ def create_app() -> FastAPI:
             )
     
     # Health check endpoint
-    @app.get("/health")
+    @app_adapter.get("/health")
     async def health_check():
         """Comprehensive health check endpoint with component status (database, service)."""
         services = get_services()
@@ -341,16 +353,16 @@ def create_app() -> FastAPI:
         
         # Return appropriate HTTP status based on overall health
         if health_info.get("status") == "unhealthy":
-            from fastapi import status as http_status
+            # Use 503 status code directly (standard HTTP status)
             return JSONResponse(
                 content=health_info,
-                status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE
+                status_code=503  # HTTP_503_SERVICE_UNAVAILABLE
             )
         
         return health_info
     
     # Metrics endpoint
-    @app.get("/metrics")
+    @app_adapter.get("/metrics")
     async def metrics():
         """Prometheus metrics endpoint."""
         return Response(
@@ -359,7 +371,7 @@ def create_app() -> FastAPI:
         )
     
     # Additional exception handlers (beyond setup_exception_handlers)
-    @app.exception_handler(Exception)
+    @app_adapter.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         """Handle all unhandled exceptions with consistent error format."""
         request_id = get_request_id() or '-'
@@ -389,7 +401,7 @@ def create_app() -> FastAPI:
             response.headers["X-Trace-ID"] = request_id
         return response
     
-    @app.exception_handler(sqlite3.Error)
+    @app_adapter.exception_handler(sqlite3.Error)
     async def sqlite_exception_handler(request: Request, exc: sqlite3.Error):
         """Handle SQLite-specific errors."""
         request_id = get_request_id() or '-'
@@ -440,7 +452,7 @@ def create_app() -> FastAPI:
             response.headers["X-Trace-ID"] = request_id
         return response
     
-    @app.exception_handler(RequestValidationError)
+    @app_adapter.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         """Handle request validation errors with clear messages."""
         request_id = get_request_id() or '-'
@@ -478,5 +490,7 @@ def create_app() -> FastAPI:
     
     logger.info("FastAPI app created and configured")
     
+    # Return the underlying FastAPI app for compatibility with uvicorn and tests
+    # The adapter is used internally, but external code expects FastAPI instance
     return app
 

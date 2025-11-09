@@ -3,10 +3,14 @@ Base class for all entity command handlers.
 """
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
-from fastapi import HTTPException
+from todorama.adapters.http_framework import HTTPFrameworkAdapter
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Initialize adapter
+http_adapter = HTTPFrameworkAdapter()
+HTTPException = http_adapter.HTTPException
 
 
 class BaseEntity(ABC):

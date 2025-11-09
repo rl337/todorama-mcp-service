@@ -2,11 +2,12 @@
 Single file containing all route definitions.
 Route handlers are thin - they just call service layer methods.
 """
-from fastapi import APIRouter, Path, Depends, Query, Body, HTTPException, Request
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
 import logging
 import sqlite3
+
+from todorama.adapters.http_framework import HTTPFrameworkAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +20,19 @@ from todorama.services.project_service import ProjectService
 from todorama.services.tag_service import TagService
 from todorama.services.template_service import TemplateService
 
-# Initialize router
-router = APIRouter()
+# Initialize adapter and router
+http_adapter = HTTPFrameworkAdapter()
+Path = http_adapter.Path
+Depends = http_adapter.Depends
+Query = http_adapter.Query
+Body = http_adapter.Body
+HTTPException = http_adapter.HTTPException
+Request = http_adapter.Request
+
+# Create router using adapter - adapter isolates FastAPI import
+# Expose underlying router for FastAPI compatibility (tests, include_router, etc.)
+router_adapter = http_adapter.create_router()
+router = router_adapter.router  # Use underlying APIRouter for decorators and compatibility
 
 
 # ============================================================================

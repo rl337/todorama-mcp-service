@@ -2,10 +2,17 @@
 MCP (Model Context Protocol) API routes.
 """
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Body
+from todorama.adapters.http_framework import HTTPFrameworkAdapter
 from todorama.mcp_api import MCPTodoAPI
 
-router = APIRouter(prefix="/mcp", tags=["mcp"])
+# Initialize adapter
+http_adapter = HTTPFrameworkAdapter()
+Body = http_adapter.Body
+HTTPException = http_adapter.HTTPException
+
+# Create router using adapter, expose underlying router for compatibility
+router_adapter = http_adapter.create_router(prefix="/mcp", tags=["mcp"])
+router = router_adapter.router
 
 
 @router.post("/create_task")
