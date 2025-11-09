@@ -16,6 +16,7 @@ from todorama.auth.dependencies import verify_api_key, optional_api_key
 from todorama.dependencies.services import get_db
 from todorama.services.task_service import TaskService
 from todorama.services.project_service import ProjectService
+from todorama.services.tag_service import TagService
 
 # Initialize router
 router = APIRouter()
@@ -522,23 +523,24 @@ async def create_tag(
     tag_data: Dict[str, Any] = Body(...)
 ) -> Dict[str, Any]:
     """Create a new tag."""
-    db = get_db()
+    tag_service = TagService(get_db())
     try:
-        if "name" not in tag_data or not tag_data["name"] or not tag_data["name"].strip():
+        if "name" not in tag_data:
             raise HTTPException(status_code=422, detail=[{
                 "loc": ["body", "name"],
-                "msg": "Tag name cannot be empty or whitespace",
-                "type": "value_error"
+                "msg": "Tag name is required",
+                "type": "value_error.missing"
             }])
-        tag_id = db.create_tag(tag_data["name"].strip())
-        tag = db.get_tag(tag_id)
-        if not tag:
-            raise HTTPException(status_code=500, detail="Failed to retrieve created tag")
+        tag = tag_service.create_tag(tag_data["name"])
         return tag
     except HTTPException:
         raise
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=422, detail=[{
+            "loc": ["body", "name"],
+            "msg": str(e),
+            "type": "value_error"
+        }])
     except Exception as e:
         logger.error(f"Failed to create tag: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to create tag")
