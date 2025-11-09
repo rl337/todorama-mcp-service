@@ -7,10 +7,16 @@ from fastapi import HTTPException
 
 from todorama.api.entities.base_entity import BaseEntity
 from todorama.models.project_models import ProjectCreate, ProjectResponse
+from todorama.services.project_service import ProjectService
 
 
 class ProjectEntity(BaseEntity):
     """Project entity with command pattern methods."""
+    
+    def __init__(self, db, auth_info: Optional[Dict[str, Any]] = None):
+        """Initialize project entity."""
+        super().__init__(db, auth_info)
+        self.service = ProjectService(db)
     
     def create(self, **kwargs) -> Dict[str, Any]:
         """
@@ -44,18 +50,14 @@ class ProjectEntity(BaseEntity):
                     detail=errors  # FastAPI format: list of error objects
                 )
             
-            project_id = self.db.create_project(
-                name=project_create.name,
-                local_path=project_create.local_path,
-                origin_url=project_create.origin_url,
-                description=project_create.description
-            )
-            created = self.db.get_project(project_id)
-            if not created:
-                raise HTTPException(status_code=500, detail="Failed to retrieve created project")
-            return dict(created)
+            # Use ProjectService instead of calling database directly
+            created = self.service.create_project(project_create)
+            return created
         except HTTPException:
             raise
+        except ValueError as e:
+            # ValueError from service indicates duplicate name or validation error
+            raise HTTPException(status_code=409, detail=str(e))
         except Exception as e:
             self._handle_error(e, "Failed to create project")
     
@@ -66,10 +68,10 @@ class ProjectEntity(BaseEntity):
         GET /api/Project/get?project_id=123
         """
         try:
-            project = self.db.get_project(project_id)
+            project = self.service.get_project(project_id)
             if not project:
                 raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
-            return dict(project)
+            return project
         except Exception as e:
             self._handle_error(e, "Failed to get project")
     
@@ -80,10 +82,10 @@ class ProjectEntity(BaseEntity):
         GET /api/Project/get_by_name?name=MyProject
         """
         try:
-            project = self.db.get_project_by_name(project_name.strip())
+            project = self.service.get_project_by_name(project_name)
             if not project:
                 raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found")
-            return dict(project)
+            return project
         except Exception as e:
             self._handle_error(e, "Failed to get project by name")
     
@@ -94,8 +96,8 @@ class ProjectEntity(BaseEntity):
         GET /api/Project/list
         """
         try:
-            projects = self.db.list_projects()
-            return [dict(project) for project in projects]
+            projects = self.service.list_projects(filters=filters)
+            return projects
         except Exception as e:
             self._handle_error(e, "Failed to list projects")
 
