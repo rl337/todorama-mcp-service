@@ -187,8 +187,8 @@ async def query_tasks(
                     detail=f"Invalid date format for {date_param}: '{date_value}'. Expected ISO format (e.g., '2025-01-01T00:00:00'). Error: {str(e)}"
                 )
     
-    db = get_db()
-    tasks = db.query_tasks(
+    service = TaskService(get_db())
+    tasks = service.query_tasks(
         task_type=task_type,
         task_status=task_status,
         assigned_agent=assigned_agent,
@@ -215,15 +215,12 @@ async def search_tasks(
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of results")
 ) -> List[TaskResponse]:
     """Search tasks using full-text search across titles, instructions, and notes."""
-    from database import TodoDatabase
-    db = get_db()
-    if not q or not q.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Search query cannot be empty or contain only whitespace. Please provide a valid search term."
-        )
-    tasks = db.search_tasks(q.strip(), limit=limit)
-    return [TaskResponse(**task) for task in tasks]
+    service = TaskService(get_db())
+    try:
+        tasks = service.search_tasks(q, limit=limit)
+        return [TaskResponse(**task) for task in tasks]
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # IMPORTANT: /tasks/activity-feed must come BEFORE /tasks/{task_id} to avoid route conflicts
@@ -241,7 +238,6 @@ async def get_activity_feed(
     in chronological order. Supports filtering by task, agent, or date range.
     """
     from datetime import datetime
-    db = get_db()
     
     # Validate date formats if provided
     if start_date:
@@ -269,7 +265,8 @@ async def get_activity_feed(
             )
     
     try:
-        feed = db.get_activity_feed(
+        service = TaskService(get_db())
+        feed = service.get_activity_feed(
             task_id=task_id,
             agent_id=agent_id,
             start_date=start_date,
@@ -296,9 +293,8 @@ async def get_activity_feed(
 @router.get("/tasks/overdue")
 async def get_overdue_tasks(limit: int = Query(100, ge=1, le=1000, description="Maximum number of results")):
     """Get tasks that are overdue (past due date and not complete)."""
-    from database import TodoDatabase
-    db = get_db()
-    overdue = db.get_overdue_tasks(limit=limit)
+    service = TaskService(get_db())
+    overdue = service.get_overdue_tasks(limit=limit)
     return {"tasks": [TaskResponse(**task) for task in overdue]}
 
 
@@ -308,9 +304,8 @@ async def get_tasks_approaching_deadline(
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of results")
 ):
     """Get tasks that are approaching their deadline."""
-    from database import TodoDatabase
-    db = get_db()
-    approaching = db.get_tasks_approaching_deadline(days_ahead=days_ahead, limit=limit)
+    service = TaskService(get_db())
+    approaching = service.get_tasks_approaching_deadline(days_ahead=days_ahead, limit=limit)
     return {"tasks": [TaskResponse(**task) for task in approaching]}
 
 
@@ -327,15 +322,12 @@ async def get_task(task_id: int = Path(..., gt=0)) -> TaskResponse:
 @router.get("/tasks/{task_id}/relationships")
 async def get_task_relationships(task_id: int = Path(..., gt=0)):
     """Get relationships for a task."""
-    db = get_db()
-    # Verify task exists
-    task = db.get_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    
-    # Get relationships
-    relationships = db.get_related_tasks(task_id)
-    return {"relationships": relationships}
+    service = TaskService(get_db())
+    try:
+        relationships = service.get_task_relationships(task_id)
+        return {"relationships": relationships}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 # ============================================================================
