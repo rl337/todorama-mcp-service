@@ -1323,9 +1323,12 @@ def test_search_tasks_ranks_by_relevance(temp_db):
     
     # Search for "API" - task1 should rank highest (multiple mentions)
     results = db.search_tasks("API")
-    assert len(results) >= 2  # Should find task1 and task3
+    # Filter to only our test tasks (test isolation)
+    our_task_ids = {task1_id, task2_id, task3_id}
+    our_results = [r for r in results if r["id"] in our_task_ids]
+    assert len(our_results) >= 2  # Should find task1 and task3
     # First result should be task1 (most relevant)
-    assert results[0]["id"] == task1_id
+    assert our_results[0]["id"] == task1_id
 
 
 def test_search_tasks_with_special_characters(temp_db):
