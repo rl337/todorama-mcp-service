@@ -15,6 +15,7 @@ from todorama.models.project_models import ProjectCreate, ProjectResponse
 from todorama.auth.dependencies import verify_api_key, optional_api_key
 from todorama.dependencies.services import get_db
 from todorama.services.task_service import TaskService
+from todorama.services.project_service import ProjectService
 
 # Initialize router
 router = APIRouter()
@@ -345,24 +346,18 @@ async def get_task_relationships(task_id: int = Path(..., gt=0)):
 async def create_project(project: ProjectCreate) -> ProjectResponse:
     """Create a new project."""
     db = get_db()
+    project_service = ProjectService(db)
     try:
-        project_id = db.create_project(
-            name=project.name,
-            local_path=project.local_path,
-            origin_url=project.origin_url,
-            description=project.description
-        )
-        created = db.get_project(project_id)
-        if not created:
-            raise HTTPException(status_code=500, detail="Failed to retrieve created project")
+        created = project_service.create_project(project)
         return ProjectResponse(**created)
-    except sqlite3.IntegrityError as e:
-        error_msg = str(e).lower()
-        if "unique constraint" in error_msg and "projects.name" in error_msg:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Project with name '{project.name}' already exists"
-            )
+    except ValueError as e:
+        # ValueError from service indicates duplicate name or validation error
+        raise HTTPException(
+            status_code=409,
+            detail=str(e)
+        )
+    except Exception as e:
+        logger.error(f"Failed to create project: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create project: {str(e)}")
 
 
@@ -372,7 +367,8 @@ async def list_projects(
 ) -> List[ProjectResponse]:
     """List all projects."""
     db = get_db()
-    projects = db.list_projects()
+    project_service = ProjectService(db)
+    projects = project_service.list_projects()
     return [ProjectResponse(**project) for project in projects]
 
 
@@ -380,7 +376,8 @@ async def list_projects(
 async def get_project(project_id: int = Path(..., gt=0)) -> ProjectResponse:
     """Get a project by ID."""
     db = get_db()
-    project = db.get_project(project_id)
+    project_service = ProjectService(db)
+    project = project_service.get_project(project_id)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project {project_id} not found")
     return ProjectResponse(**project)
@@ -390,7 +387,8 @@ async def get_project(project_id: int = Path(..., gt=0)) -> ProjectResponse:
 async def get_project_by_name(project_name: str = Path(..., min_length=1)) -> ProjectResponse:
     """Get a project by name."""
     db = get_db()
-    project = db.get_project_by_name(project_name.strip())
+    project_service = ProjectService(db)
+    project = project_service.get_project_by_name(project_name)
     if not project:
         raise HTTPException(status_code=404, detail=f"Project '{project_name}' not found")
     return ProjectResponse(**project)
