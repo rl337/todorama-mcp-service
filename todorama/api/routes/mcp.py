@@ -99,6 +99,27 @@ async def mcp_query_tasks(
     return {"tasks": tasks}
 
 
+@router.post("/get_task_summary")
+async def mcp_get_task_summary(
+    project_id: Optional[int] = Body(None, embed=True),
+    task_type: Optional[str] = Body(None, embed=True),
+    task_status: Optional[str] = Body(None, embed=True),
+    assigned_agent: Optional[str] = Body(None, embed=True),
+    priority: Optional[str] = Body(None, embed=True),
+    limit: int = Body(100, embed=True)
+):
+    """MCP: Get lightweight task summaries (essential fields only)."""
+    result = MCPTodoAPI.get_task_summary(
+        project_id=project_id,
+        task_type=task_type,
+        task_status=task_status,
+        assigned_agent=assigned_agent,
+        priority=priority,
+        limit=limit
+    )
+    return result
+
+
 @router.post("/add_task_update")
 async def mcp_add_task_update(
     task_id: int = Body(..., embed=True),

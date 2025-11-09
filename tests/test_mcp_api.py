@@ -1355,6 +1355,176 @@ def test_mcp_query_tasks(auth_client):
     assert all(t["task_status"] == "available" for t in tasks)
 
 
+def test_mcp_get_task_summary(auth_client):
+    """Test MCP get_task_summary function - returns lightweight summaries."""
+    # Create tasks with different types and statuses
+    task1_response = auth_client.post("/mcp/create_task", json={
+        "title": "Summary Test Task 1",
+        "task_type": "concrete",
+        "task_instruction": "Do it",
+        "verification_instruction": "Verify",
+        "agent_id": "test-agent"
+    })
+    task1_id = task1_response.json().get("task_id") or task1_response.json().get("id")
+    
+    task2_response = auth_client.post("/mcp/create_task", json={
+        "title": "Summary Test Task 2",
+        "task_type": "abstract",
+        "task_instruction": "Break down",
+        "verification_instruction": "Verify",
+        "agent_id": "test-agent"
+    })
+    task2_id = task2_response.json().get("task_id") or task2_response.json().get("id")
+    
+    # Reserve one task to test in_progress status
+    auth_client.post("/mcp/reserve_task", json={
+        "task_id": task1_id,
+        "agent_id": "test-agent"
+    })
+    
+    # Get summaries - should return only essential fields
+    response = auth_client.post("/mcp/get_task_summary", json={
+        "limit": 10
+    })
+    assert response.status_code == 200
+    result = response.json()
+    assert result["success"] is True
+    assert "tasks" in result
+    assert "count" in result
+    assert isinstance(result["tasks"], list)
+    assert result["count"] == len(result["tasks"])
+    
+    # Verify summaries contain only essential fields
+    summaries = result["tasks"]
+    assert len(summaries) > 0
+    
+    # Check that we have our test tasks
+    task1_summary = next((s for s in summaries if s["id"] == task1_id), None)
+    task2_summary = next((s for s in summaries if s["id"] == task2_id), None)
+    assert task1_summary is not None
+    assert task2_summary is not None
+    
+    # Verify essential fields are present
+    essential_fields = ["id", "title", "task_type", "task_status", "assigned_agent", 
+                       "project_id", "priority", "created_at", "updated_at", "completed_at"]
+    for field in essential_fields:
+        assert field in task1_summary, f"Missing essential field: {field}"
+        assert field in task2_summary, f"Missing essential field: {field}"
+    
+    # Verify that full task fields are NOT present (lightweight)
+    full_task_fields = ["task_instruction", "verification_instruction", "notes", "metadata"]
+    for field in full_task_fields:
+        assert field not in task1_summary, f"Full task field should not be in summary: {field}"
+        assert field not in task2_summary, f"Full task field should not be in summary: {field}"
+    
+    # Verify task1 is in_progress (was reserved)
+    assert task1_summary["task_status"] == "in_progress"
+    assert task1_summary["assigned_agent"] == "test-agent"
+    
+    # Verify task2 is available
+    assert task2_summary["task_status"] == "available"
+    
+    # Test filtering by task_type
+    response = auth_client.post("/mcp/get_task_summary", json={
+        "task_type": "concrete",
+        "limit": 10
+    })
+    assert response.status_code == 200
+    result = response.json()
+    summaries = result["tasks"]
+    assert all(s["task_type"] == "concrete" for s in summaries)
+    assert any(s["id"] == task1_id for s in summaries)
+    
+    # Test filtering by task_status
+    response = auth_client.post("/mcp/get_task_summary", json={
+        "task_status": "in_progress",
+        "limit": 10
+    })
+    assert response.status_code == 200
+    result = response.json()
+    summaries = result["tasks"]
+    assert all(s["task_status"] == "in_progress" for s in summaries)
+    assert any(s["id"] == task1_id for s in summaries)
+    
+    # Test filtering by assigned_agent
+    response = auth_client.post("/mcp/get_task_summary", json={
+        "assigned_agent": "test-agent",
+        "limit": 10
+    })
+    assert response.status_code == 200
+    result = response.json()
+    summaries = result["tasks"]
+    assert all(s["assigned_agent"] == "test-agent" for s in summaries)
+    assert any(s["id"] == task1_id for s in summaries)
+    
+    # Verify response size is smaller than full task objects
+    # Get full task for comparison
+    full_task_response = auth_client.post("/mcp/get_task_context", json={"task_id": task1_id})
+    full_task = full_task_response.json()["task"]
+    
+    # Summary should have fewer fields
+    summary_keys = set(task1_summary.keys())
+    full_task_keys = set(full_task.keys())
+    assert len(summary_keys) < len(full_task_keys), "Summary should have fewer fields than full task"
+
+
+def test_mcp_post_tools_call_get_task_summary(auth_client):
+    """Test MCP tools/call for get_task_summary - CRITICAL for MCP integration."""
+    # Create test task
+    create_response = auth_client.post("/mcp/create_task", json={
+        "title": "MCP Summary Test Task",
+        "task_type": "concrete",
+        "task_instruction": "Test summary functionality",
+        "verification_instruction": "Verify summary",
+        "agent_id": "test-agent"
+    })
+    task_id = create_response.json().get("task_id") or create_response.json().get("id")
+    
+    # Call via MCP protocol
+    response = auth_client.post("/mcp/sse", json={
+        "jsonrpc": "2.0",
+        "id": 26,
+        "method": "tools/call",
+        "params": {
+            "name": "get_task_summary",
+            "arguments": {
+                "task_status": "available",
+                "limit": 10
+            }
+        }
+    })
+    assert response.status_code == 200
+    result = response.json()
+    
+    assert result["jsonrpc"] == "2.0"
+    assert result["id"] == 26
+    assert "result" in result
+    assert "content" in result["result"]
+    
+    # Parse the content (JSON string)
+    import json
+    content_text = result["result"]["content"][0]["text"]
+    summary_data = json.loads(content_text)
+    
+    # Verify response structure
+    assert summary_data["success"] is True
+    assert "tasks" in summary_data
+    assert "count" in summary_data
+    assert isinstance(summary_data["tasks"], list)
+    
+    # Verify we got our test task
+    summaries = summary_data["tasks"]
+    assert any(s["id"] == task_id for s in summaries)
+    
+    # Verify essential fields only
+    task_summary = next((s for s in summaries if s["id"] == task_id), None)
+    assert task_summary is not None
+    essential_fields = ["id", "title", "task_type", "task_status", "assigned_agent", 
+                       "project_id", "priority", "created_at", "updated_at", "completed_at"]
+    for field in essential_fields:
+        assert field in task_summary, f"Missing essential field: {field}"
+
+
 def test_mcp_add_task_update(auth_client):
     """Test MCP add_task_update function."""
     # Create task

@@ -3190,6 +3190,14 @@ def handle_jsonrpc_request(request: Dict[str, Any]) -> Dict[str, Any]:
                 limit=arguments.get("limit", 10),
                 project_id=arguments.get("project_id"),
                 hours=arguments.get("hours")
+            ),
+            "get_task_summary": lambda: MCPTodoAPI.get_task_summary(
+                project_id=arguments.get("project_id"),
+                task_type=arguments.get("task_type"),
+                task_status=arguments.get("task_status"),
+                assigned_agent=arguments.get("assigned_agent"),
+                priority=arguments.get("priority"),
+                limit=arguments.get("limit", 100)
             )
         }
         
