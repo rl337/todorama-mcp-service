@@ -41,7 +41,7 @@ print_info() {
 
 # Check if we're in the right directory
 check_project_root() {
-    if [ ! -f "src/main.py" ] || [ ! -d "tests" ]; then
+    if [ ! -d "todorama" ] || [ ! -d "tests" ]; then
         print_error "Must be run from TODO MCP Service root directory"
         exit 1
     fi
@@ -60,14 +60,14 @@ check_dependencies() {
     # Check for pytest (via UV or Poetry)
     if command -v uv &> /dev/null; then
         print_success "UV found: $(uv --version)"
-        if ! uv run python3 -c "import pytest" 2>/dev/null; then
+        if ! uv run python3 -c "import pytest" ; then
             print_warning "pytest not available in UV environment. Installing dev dependencies..."
             uv sync --dev
         fi
         print_success "pytest available via UV"
     elif command -v poetry &> /dev/null; then
         print_success "Poetry found: $(poetry --version)"
-        if ! poetry run python3 -c "import pytest" 2>/dev/null; then
+        if ! poetry run python3 -c "import pytest" ; then
             print_warning "pytest not available in Poetry environment. Installing dev dependencies..."
             poetry install --with dev
         fi
@@ -79,19 +79,19 @@ check_dependencies() {
     
     # Check for other dependencies (via UV or Poetry if using them)
     if command -v uv &> /dev/null; then
-        if ! uv run python3 -c "import fastapi" 2>/dev/null; then
+        if ! uv run python3 -c "import fastapi" ; then
             print_warning "FastAPI not available in UV environment. Running uv sync..."
             uv sync
         fi
         print_success "FastAPI available via UV"
     elif command -v poetry &> /dev/null; then
-        if ! poetry run python3 -c "import fastapi" 2>/dev/null; then
+        if ! poetry run python3 -c "import fastapi" ; then
             print_warning "FastAPI not available in Poetry environment. Running poetry install..."
             poetry install
         fi
         print_success "FastAPI available via Poetry"
     else
-        if ! python3 -c "import fastapi" 2>/dev/null; then
+        if ! python3 -c "import fastapi" ; then
             print_error "fastapi not installed"
             exit 1
         fi
@@ -99,9 +99,9 @@ check_dependencies() {
     fi
 }
 
-# Run unit tests
+# Run unit tests in parallel
 run_tests() {
-    print_header "Running Unit Tests"
+    print_header "Running Unit Tests (Parallel)"
     
     local test_files=(
         "tests/test_database.py"
@@ -117,41 +117,117 @@ run_tests() {
         "tests/test_routes_tasks.py"
     )
     
-    local failed_tests=0
+    # Determine pytest command
+    if command -v uv &> /dev/null && [ -f ".venv/bin/pytest" ]; then
+        pytest_cmd=".venv/bin/pytest"
+    elif command -v uv &> /dev/null; then
+        pytest_cmd="uv run pytest"
+    elif command -v poetry &> /dev/null; then
+        pytest_cmd="poetry run pytest"
+    else
+        pytest_cmd="python3 -m pytest"
+    fi
     
+    # Check if pytest-xdist is available for parallel execution within files
+    local xdist_available=false
+    # Check if -n option is available (indicates xdist is installed)
+    if $pytest_cmd -h 2>&1 | grep -qE "\s-n\s|--numprocesses"; then
+        xdist_available=true
+    fi
+    
+    # Get number of CPU cores (use all available, but cap at number of test files)
+    local num_cores=$(nproc)
+    local num_files=${#test_files[@]}
+    local max_workers=$((num_cores < num_files ? num_cores : num_files))
+    
+    print_info "Running ${num_files} test files in parallel (max ${max_workers} workers)"
+    if [ "$xdist_available" = true ]; then
+        print_info "pytest-xdist available: tests within each file will also run in parallel"
+    fi
+    
+    # Create temporary directory for test results
+    local results_dir=$(mktemp -d)
+    local failed_tests=0
+    local pids=()
+    local test_names=()
+    
+    # Launch all test files in parallel
     for test_file in "${test_files[@]}"; do
         if [ ! -f "$test_file" ]; then
             print_warning "Test file not found: $test_file"
             continue
         fi
         
-        print_info "Running $(basename $test_file)..."
-        # Use UV if available, otherwise Poetry, otherwise venv pytest
-        if command -v uv &> /dev/null && [ -f ".venv/bin/pytest" ]; then
-            pytest_cmd=".venv/bin/pytest"
-        elif command -v uv &> /dev/null; then
-            pytest_cmd="uv run pytest"
-        elif command -v poetry &> /dev/null; then
-            pytest_cmd="poetry run pytest"
-        else
-            pytest_cmd="python3 -m pytest"
-        fi
+        local test_name=$(basename "$test_file")
+        local result_file="${results_dir}/${test_name}.result"
+        local output_file="${results_dir}/${test_name}.out"
         
-        # Add timeout to prevent hanging tests (5 minutes per test file)
-        # Use --kill-after=10 to force kill if TERM doesn't work within 10 seconds
-        # Use timeout to create a process group that can be killed
-        if timeout --kill-after=10 300 $pytest_cmd "$test_file" -v --tb=short 2>&1; then
-            print_success "$(basename $test_file) passed"
-        else
-            EXIT_CODE=$?
-            if [ $EXIT_CODE -eq 124 ]; then
-                print_error "$(basename $test_file) TIMED OUT after 5 minutes"
-            else
-                print_error "$(basename $test_file) failed"
+        test_names+=("$test_name")
+        
+        # Run test file in background
+        (
+            # Use pytest-xdist for parallel execution within file if available
+            local pytest_args="-v --tb=short"
+            if [ "$xdist_available" = true ]; then
+                # Use auto to detect number of workers, but limit to avoid overloading
+                pytest_args="$pytest_args -n auto"
             fi
-            failed_tests=$((failed_tests + 1))
-        fi
+            
+            if timeout --kill-after=10 300 $pytest_cmd "$test_file" $pytest_args > "$output_file" 2>&1; then
+                echo "0" > "$result_file"
+            else
+                EXIT_CODE=$?
+                if [ $EXIT_CODE -eq 124 ]; then
+                    echo "TIMEOUT" > "$result_file"
+                else
+                    echo "$EXIT_CODE" > "$result_file"
+                fi
+            fi
+        ) &
+        
+        pids+=($!)
     done
+    
+    # Wait for all background jobs and collect results
+    local completed=0
+    while [ $completed -lt ${#test_names[@]} ]; do
+        for i in "${!pids[@]}"; do
+            if [ -n "${pids[$i]}" ] && ! kill -0 "${pids[$i]}" 2>/dev/null; then
+                # Process finished
+                wait "${pids[$i]}"
+                local test_name="${test_names[$i]}"
+                local result_file="${results_dir}/${test_name}.result"
+                
+                if [ -f "$result_file" ]; then
+                    local result=$(cat "$result_file")
+                    if [ "$result" = "0" ]; then
+                        print_success "$test_name passed"
+                    elif [ "$result" = "TIMEOUT" ]; then
+                        print_error "$test_name TIMED OUT after 5 minutes"
+                        failed_tests=$((failed_tests + 1))
+                    else
+                        print_error "$test_name failed"
+                        failed_tests=$((failed_tests + 1))
+                        # Show last 20 lines of output for failed tests
+                        if [ -f "${results_dir}/${test_name}.out" ]; then
+                            echo "  Last 20 lines of output:"
+                            tail -20 "${results_dir}/${test_name}.out" | sed 's/^/  /'
+                        fi
+                    fi
+                else
+                    print_error "$test_name failed (no result file)"
+                    failed_tests=$((failed_tests + 1))
+                fi
+                
+                pids[$i]=""
+                completed=$((completed + 1))
+            fi
+        done
+        sleep 0.1
+    done
+    
+    # Cleanup
+    rm -rf "$results_dir"
     
     if [ $failed_tests -eq 0 ]; then
         print_success "All unit tests passed"
@@ -170,9 +246,10 @@ check_code_quality() {
     local issues=0
     
     # Check for syntax errors
-    for py_file in src/*.py; do
+    # Check Python files in todorama package
+    for py_file in todorama/*.py; do
         if [ -f "$py_file" ]; then
-            if python3 -m py_compile "$py_file" 2>/dev/null; then
+            if python3 -m py_compile "$py_file" ; then
                 print_success "Syntax OK: $(basename $py_file)"
             else
                 print_error "Syntax error in: $(basename $py_file)"
@@ -193,7 +270,7 @@ check_code_quality() {
         python_cmd="python3"
     fi
     
-    if $python_cmd -c "import sys; sys.path.insert(0, 'src'); from database import TodoDatabase; from main import app; from mcp_api import MCPTodoAPI; from backup import BackupManager" 2>/dev/null; then
+    if $python_cmd -c "from todorama.database import TodoDatabase; from todorama.main import app; from todorama.mcp_api import MCPTodoAPI; from todorama.backup import BackupManager" ; then
         print_success "All imports resolve correctly"
     else
         print_error "Import errors detected"
@@ -219,7 +296,7 @@ test_service_startup() {
     fi
     
     # Check if service can be started
-    if docker compose ps todo-mcp-service 2>/dev/null | grep -q "running\|Up"; then
+    if docker compose ps todo-mcp-service  | grep -q "running\|Up"; then
         print_info "Service is already running, testing health endpoint..."
         if curl -s -f http://localhost:5080/health > /dev/null 2>&1; then
             print_success "Service is healthy"
@@ -264,16 +341,15 @@ test_database_schema() {
         python_cmd="python3"
     fi
     
-    if $python_cmd << EOF 2>/dev/null
-import sys
-sys.path.insert(0, 'src')
-from database import TodoDatabase
+    if $python_cmd << EOF 
+from todorama.database import TodoDatabase
 import os
+import sys
+import sqlite3
 
 db = TodoDatabase('$test_db')
 
 # Test that schema was created
-import sqlite3
 conn = sqlite3.connect('$test_db')
 cursor = conn.cursor()
 
@@ -317,7 +393,7 @@ test_backup_functionality() {
         pytest_cmd="python3 -m pytest"
     fi
     
-    if $pytest_cmd tests/test_backup.py -v --tb=short -k "test_" 2>/dev/null | grep -q "PASSED\|passed"; then
+    if $pytest_cmd tests/test_backup.py -v --tb=short -k "test_"  | grep -q "PASSED\|passed"; then
         print_success "Backup functionality tests passed"
         return 0
     else

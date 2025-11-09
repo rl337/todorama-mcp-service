@@ -1,7 +1,7 @@
 [project]
-name = "todo-mcp-service"
+name = "todorama"
 version = "0.1.0"
-description = "TODO MCP Service - Task management for AI agents with project support"
+description = "Todorama - TODO Service for AI Agents with project support"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -36,6 +36,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
+    "pytest-xdist>=3.0.0",
 ]
 
 # No build system needed for application - dependencies only
