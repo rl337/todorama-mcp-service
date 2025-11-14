@@ -1,23 +1,4 @@
 services:
-  postgresql:
-    image: postgres:15-alpine
-    container_name: todo-postgresql-prod
-    restart: always
-    environment:
-      - POSTGRES_DB=${POSTGRES_DB:-todos}
-      - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-    volumes:
-      - postgres_prod_data:/var/lib/postgresql/data
-      - ./backups/postgres:/backups
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - production-network
-
   todo-mcp-service-prod:
     build:
       context: .
@@ -28,23 +9,17 @@ services:
     ports:
       - "${PRODUCTION_PORT:-8004}:8004"
     environment:
-      - DB_TYPE=postgresql
-      - DB_HOST=postgresql
-      - DB_PORT=5432
-      - DB_NAME=${POSTGRES_DB:-todos}
-      - DB_USER=${POSTGRES_USER:-postgres}
-      - DB_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      # Database configuration - SQLite only
+      - DB_TYPE=sqlite
+      - TODO_DB_PATH=/app/data/todos.db
       - TODO_BACKUPS_DIR=/app/backups
       - TODO_SERVICE_PORT=8004
       - TODO_BACKUP_INTERVAL_HOURS=24
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - ENVIRONMENT=production
     volumes:
-      - ${PRODUCTION_DATA_DIR:-./data/production}:/app/data
-      - ${PRODUCTION_BACKUPS_DIR:-./backups/production}:/app/backups
-    depends_on:
-      postgresql:
-        condition: service_healthy
+      - /var/data/june/todorama-mcp-service/data:/app/data
+      - /var/data/june/todorama-mcp-service/backups:/app/backups
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8004/health"]
       interval: 30s
@@ -60,9 +35,6 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
-
-volumes:
-  postgres_prod_data:
 
 networks:
   production-network:

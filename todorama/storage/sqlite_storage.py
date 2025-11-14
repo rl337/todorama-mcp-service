@@ -2,9 +2,11 @@
 SQLite implementation of storage interface.
 Wraps TodoDatabase to provide clean abstraction.
 """
-from typing import Optional, List, Dict, Any
-from todorama.database import TodoDatabase
+from typing import Optional, List, Dict, Any, TYPE_CHECKING
 from .interface import StorageInterface
+
+if TYPE_CHECKING:
+    from todorama.database import TodoDatabase
 
 
 class SQLiteStorage(StorageInterface):
@@ -12,6 +14,8 @@ class SQLiteStorage(StorageInterface):
     
     def __init__(self, db_path: str):
         """Initialize SQLite storage."""
+        # Import here to avoid circular import
+        from todorama.database import TodoDatabase
         self._db = TodoDatabase(db_path)
     
     # Task operations

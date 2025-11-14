@@ -10,16 +10,17 @@ services to interact with data, enabling better separation of concerns,
 testability, and maintainability.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from datetime import datetime
 
-from todorama.database import TodoDatabase
+if TYPE_CHECKING:
+    from todorama.database import TodoDatabase
 
 
 class TaskRepository:
     """Repository for task operations."""
 
-    def __init__(self, db: TodoDatabase):
+    def __init__(self, db: "TodoDatabase"):
         """Initialize repository with TodoDatabase instance.
         
         Args:
@@ -184,7 +185,7 @@ class TaskRepository:
 class ProjectRepository:
     """Repository for project operations."""
 
-    def __init__(self, db: TodoDatabase):
+    def __init__(self, db: "TodoDatabase"):
         """Initialize repository with TodoDatabase instance.
         
         Args:
@@ -306,7 +307,7 @@ class ProjectRepository:
 class OrganizationRepository:
     """Repository for organization operations."""
 
-    def __init__(self, db: TodoDatabase):
+    def __init__(self, db: "TodoDatabase"):
         """Initialize repository with TodoDatabase instance.
         
         Args:

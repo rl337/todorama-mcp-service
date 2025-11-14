@@ -1,31 +1,4 @@
 services:
-  postgresql:
-    image: postgres:15-alpine
-    container_name: todo-postgresql
-    restart: unless-stopped
-    environment:
-      - POSTGRES_DB=${POSTGRES_DB:-todos}
-      - POSTGRES_USER=${POSTGRES_USER:-postgres}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    # Resource limits for production
-    deploy:
-      resources:
-        limits:
-          cpus: '${POSTGRES_CPU_LIMIT:-1.0}'
-          memory: ${POSTGRES_MEMORY_LIMIT:-512M}
-        reservations:
-          cpus: '${POSTGRES_CPU_RESERVATION:-0.25}'
-          memory: ${POSTGRES_MEMORY_RESERVATION:-128M}
-    networks:
-      - todo-network
-
   todo-mcp-service:
     build:
       context: .
@@ -35,15 +8,9 @@ services:
     ports:
       - "${TODO_SERVICE_PORT:-8004}:8004"
     environment:
-      # Database configuration - set DB_TYPE=postgresql to use PostgreSQL
-      - DB_TYPE=${DB_TYPE:-sqlite}
+      # Database configuration - SQLite only
+      - DB_TYPE=sqlite
       - TODO_DB_PATH=/app/data/todos.db
-      # PostgreSQL configuration (used when DB_TYPE=postgresql)
-      - DB_HOST=${DB_HOST:-postgresql}
-      - DB_PORT=${DB_PORT:-5432}
-      - DB_NAME=${DB_NAME:-todos}
-      - DB_USER=${DB_USER:-postgres}
-      - DB_PASSWORD=${DB_PASSWORD:-postgres}
       # Other settings
       - TODO_BACKUPS_DIR=/app/backups
       - TODO_SERVICE_PORT=8004
@@ -60,11 +27,9 @@ services:
       - OTEL_EXPORTER_JAEGER_ENABLED=${OTEL_EXPORTER_JAEGER_ENABLED:-false}
       - OTEL_CONSOLE_EXPORTER_ENABLED=${OTEL_CONSOLE_EXPORTER_ENABLED:-false}
     volumes:
-      - ${TODO_DATA_DIR:-./data}:/app/data
-      - ${TODO_BACKUPS_DIR:-./backups}:/app/backups
+      - /var/data/june/todorama-mcp-service/data:/app/data
+      - /var/data/june/todorama-mcp-service/backups:/app/backups
     depends_on:
-      postgresql:
-        condition: service_healthy
       nats:
         condition: service_healthy
       jaeger:
@@ -128,8 +93,8 @@ services:
       - "-m"
       - "8222"
     ports:
-      - "${NATS_PORT:-4222}:4222"  # Client connections
-      - "${NATS_MONITORING_PORT:-8222}:8222"  # HTTP monitoring
+      - "${NATS_PORT:-4223}:4222"  # Client connections (using 4223 to avoid conflict)
+      - "${NATS_MONITORING_PORT:-8223}:8222"  # HTTP monitoring (using 8223 to avoid conflict)
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8222/healthz"]
       interval: 10s
@@ -157,9 +122,6 @@ services:
       retries: 5
     networks:
       - todo-network
-
-volumes:
-  postgres_data:
 
 networks:
   todo-network:
