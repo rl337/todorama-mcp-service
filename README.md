@@ -20,7 +20,7 @@ A standalone SQLite-based task management service for AI agents with change hist
 ```bash
 # Clone and navigate
 git clone <repository-url>
-cd todo-mcp-service
+cd todorama-mcp-service
 
 # Set data directory (optional)
 export TODO_DATA_DIR=/path/to/data
@@ -69,7 +69,7 @@ For local development without Docker:
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd todo-mcp-service
+cd todorama-mcp-service
 
 # Install dependencies using UV
 uv sync

@@ -115,7 +115,7 @@ run_precommit_fix_mode() {
           - Understand what tests are failing
         
         STEP 2: Run tests to see current failures
-          - Run the test suite with timeout: cd /home/rlee/dev/todo-mcp-service && timeout 1800 ./run_checks.sh
+          - Run the test suite with timeout: cd /home/rlee/dev/todorama-mcp-service && timeout 1800 ./run_checks.sh
           - CRITICAL: Always use 'timeout' command for long-running operations
           - If tests timeout, investigate what's hanging and fix it
           - Note all failing tests and errors

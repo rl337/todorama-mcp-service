@@ -1796,7 +1796,7 @@ If `run_checks.sh` fails:
 ## Integration with June Project
 
 When working on TODO MCP Service that affects June:
-1. Run `./run_checks.sh` in todo-mcp-service
+1. Run `./run_checks.sh` in todorama-mcp-service
 2. Run `../june/run_checks.sh` to verify integration
 3. Ensure both test suites pass
 4. Update June's `run_checks.sh` if needed

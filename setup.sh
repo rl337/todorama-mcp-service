@@ -16,7 +16,7 @@ if command -v gh &> /dev/null; then
     fi
     
     # Create public repository
-    REPO_NAME="todo-mcp-service"
+    REPO_NAME="todorama-mcp-service"
     echo "Creating public repository: $REPO_NAME"
     
     gh repo create "$REPO_NAME" \
