@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roles - TODO Task Management</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <style>
+        .permissions-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .permission-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .permission-item input[type="checkbox"] {
+            width: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Roles</h1>
+            <div class="header-actions">
+                <a href="/static/index.html" class="btn btn-secondary">Back to Tasks</a>
+                <button id="createRoleBtn" class="btn btn-primary">Create Role</button>
+            </div>
+        </header>
+
+        <!-- Organization Filter -->
+        <section class="filters">
+            <div class="filter-group">
+                <label for="orgFilter">Organization:</label>
+                <select id="orgFilter">
+                    <option value="">All Organizations</option>
+                </select>
+            </div>
+        </section>
+
+        <!-- Error Message -->
+        <div id="errorMessage" class="error" style="display: none;"></div>
+
+        <!-- Loading Indicator -->
+        <div id="loadingIndicator" class="loading" style="display: none;">
+            <div class="spinner"></div>
+            <span>Loading roles...</span>
+        </div>
+
+        <!-- Roles List -->
+        <section class="tasks-section">
+            <div class="table-header">
+                <h2>Roles</h2>
+            </div>
+            <div class="table-container">
+                <table id="rolesTable">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Organization ID</th>
+                            <th>Name</th>
+                            <th>Permissions</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rolesTableBody">
+                        <!-- Roles will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <!-- Create/Edit Role Modal -->
+    <div id="roleModal" class="modal" style="display: none;">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2 id="roleModalTitle">Create Role</h2>
+                <button class="modal-close" onclick="closeRoleModal()">&times;</button>
+            </div>
+            <form id="roleForm">
+                <div class="form-group">
+                    <label for="roleOrgId">Organization ID *</label>
+                    <input type="number" id="roleOrgId" required min="1">
+                </div>
+                <div class="form-group">
+                    <label for="roleName">Name *</label>
+                    <input type="text" id="roleName" required>
+                </div>
+                <div class="form-group">
+                    <label>Permissions *</label>
+                    <div class="permissions-grid" id="permissionsGrid">
+                        <!-- Permissions checkboxes will be populated here -->
+                    </div>
+                    <small style="display: block; margin-top: 10px; color: #666;">
+                        Permissions are stored as JSON. Use checkboxes above or edit JSON directly below.
+                    </small>
+                    <textarea id="rolePermissionsJson" rows="6" style="margin-top: 10px; font-family: monospace;" required></textarea>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Save</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeRoleModal()">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="/static/tenant-api.js"></script>
+    <script>
+        let currentRoleId = null;
+        let roles = [];
+        let organizations = [];
+        
+        // Common permissions (can be extended)
+        const commonPermissions = [
+            'read_tasks', 'write_tasks', 'delete_tasks',
+            'read_projects', 'write_projects', 'delete_projects',
+            'manage_organizations', 'manage_teams', 'manage_roles',
+            'admin'
+        ];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            setupEventListeners();
+            loadOrganizations();
+            loadRoles();
+            setupPermissionsGrid();
+        });
+
+        function setupEventListeners() {
+            document.getElementById('createRoleBtn').addEventListener('click', () => {
+                openRoleModal();
+            });
+
+            document.getElementById('roleForm').addEventListener('submit', saveRole);
+
+            document.getElementById('orgFilter').addEventListener('change', filterRoles);
+
+            document.getElementById('rolePermissionsJson').addEventListener('input', () => {
+                updatePermissionsFromJson();
+            });
+
+            // Close modal on outside click
+            document.getElementById('roleModal').addEventListener('click', (e) => {
+                if (e.target.id === 'roleModal') {
+                    closeRoleModal();
+                }
+            });
+        }
+
+        function setupPermissionsGrid() {
+            const grid = document.getElementById('permissionsGrid');
+            grid.innerHTML = '';
+            
+            commonPermissions.forEach(perm => {
+                const item = document.createElement('div');
+                item.className = 'permission-item';
+                item.innerHTML = `
+                    <input type="checkbox" id="perm_${perm}" value="${perm}" onchange="updateJsonFromPermissions()">
+                    <label for="perm_${perm}">${perm.replace(/_/g, ' ')}</label>
+                `;
+                grid.appendChild(item);
+            });
+        }
+
+        function updateJsonFromPermissions() {
+            const checked = Array.from(document.querySelectorAll('#permissionsGrid input[type="checkbox"]:checked'))
+                .map(cb => cb.value);
+            const permissionsObj = {};
+            checked.forEach(perm => {
+                permissionsObj[perm] = true;
+            });
+            document.getElementById('rolePermissionsJson').value = JSON.stringify(permissionsObj, null, 2);
+        }
+
+        function updatePermissionsFromJson() {
+            try {
+                const jsonText = document.getElementById('rolePermissionsJson').value;
+                const permissions = JSON.parse(jsonText);
+                
+                // Clear all checkboxes
+                document.querySelectorAll('#permissionsGrid input[type="checkbox"]').forEach(cb => {
+                    cb.checked = false;
+                });
+                
+                // Set checkboxes based on JSON
+                Object.keys(permissions).forEach(perm => {
+                    const checkbox = document.getElementById(`perm_${perm}`);
+                    if (checkbox && permissions[perm]) {
+                        checkbox.checked = true;
+                    }
+                });
+            } catch (e) {
+                // Invalid JSON - ignore
+            }
+        }
+
+        async function loadOrganizations() {
+            try {
+                organizations = await listOrganizations();
+                const orgFilter = document.getElementById('orgFilter');
+                organizations.forEach(org => {
+                    const option = document.createElement('option');
+                    option.value = org.id;
+                    option.textContent = org.name;
+                    orgFilter.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Failed to load organizations:', error);
+            }
+        }
+
+        async function loadRoles() {
+            showLoading();
+            hideError();
+            
+            try {
+                // Load roles from all organizations
+                const allRoles = [];
+                for (const org of organizations) {
+                    try {
+                        const orgRoles = await listRoles(org.id);
+                        allRoles.push(...orgRoles);
+                    } catch (error) {
+                        console.warn(`Failed to load roles for org ${org.id}:`, error);
+                    }
+                }
+                roles = allRoles;
+                renderRoles();
+            } catch (error) {
+                showError('Failed to load roles: ' + error.message);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function filterRoles() {
+            const orgId = parseInt(document.getElementById('orgFilter').value);
+            renderRoles(orgId);
+        }
+
+        function renderRoles(filterOrgId = null) {
+            const tbody = document.getElementById('rolesTableBody');
+            tbody.innerHTML = '';
+
+            let filteredRoles = roles;
+            if (filterOrgId) {
+                filteredRoles = roles.filter(r => r.organization_id === filterOrgId);
+            }
+
+            if (filteredRoles.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px;">No roles found</td></tr>';
+                return;
+            }
+
+            filteredRoles.forEach(role => {
+                let permissionsDisplay = '{}';
+                try {
+                    const perms = JSON.parse(role.permissions);
+                    permissionsDisplay = Object.keys(perms).filter(k => perms[k]).join(', ') || 'None';
+                } catch (e) {
+                    permissionsDisplay = role.permissions.substring(0, 50) + (role.permissions.length > 50 ? '...' : '');
+                }
+
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${role.id}</td>
+                    <td>${role.organization_id || 'N/A'}</td>
+                    <td>${escapeHtml(role.name || '')}</td>
+                    <td title="${escapeHtml(role.permissions)}">${escapeHtml(permissionsDisplay)}</td>
+                    <td>${formatDate(role.created_at)}</td>
+                    <td class="actions-cell">
+                        <button class="btn btn-small btn-secondary" onclick="editRole(${role.id})">Edit</button>
+                        <button class="btn btn-small btn-danger" onclick="deleteRoleHandler(${role.id})">Delete</button>
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        function openRoleModal(roleId = null) {
+            currentRoleId = roleId;
+            const form = document.getElementById('roleForm');
+            const title = document.getElementById('roleModalTitle');
+            
+            if (roleId) {
+                title.textContent = 'Edit Role';
+                const role = roles.find(r => r.id === roleId);
+                if (role) {
+                    document.getElementById('roleOrgId').value = role.organization_id || '';
+                    document.getElementById('roleName').value = role.name || '';
+                    document.getElementById('rolePermissionsJson').value = role.permissions || '{}';
+                    updatePermissionsFromJson();
+                }
+            } else {
+                title.textContent = 'Create Role';
+                form.reset();
+                document.getElementById('rolePermissionsJson').value = '{}';
+                updatePermissionsFromJson();
+            }
+            
+            document.getElementById('roleModal').style.display = 'flex';
+        }
+
+        function closeRoleModal() {
+            document.getElementById('roleModal').style.display = 'none';
+            currentRoleId = null;
+        }
+
+        async function saveRole(e) {
+            e.preventDefault();
+            
+            const orgId = parseInt(document.getElementById('roleOrgId').value);
+            const name = document.getElementById('roleName').value;
+            let permissionsJson = document.getElementById('rolePermissionsJson').value;
+            
+            // Validate JSON
+            try {
+                JSON.parse(permissionsJson);
+            } catch (e) {
+                showError('Invalid JSON in permissions field: ' + e.message);
+                return;
+            }
+
+            const data = {
+                name: name,
+                permissions: permissionsJson
+            };
+
+            try {
+                if (currentRoleId) {
+                    await updateRole(currentRoleId, data);
+                    showSuccess('Role updated successfully!');
+                } else {
+                    await createRole(orgId, data);
+                    showSuccess('Role created successfully!');
+                }
+                
+                closeRoleModal();
+                await loadRoles();
+            } catch (error) {
+                showError('Failed to save role: ' + error.message);
+            }
+        }
+
+        async function editRole(roleId) {
+            openRoleModal(roleId);
+        }
+
+        async function deleteRoleHandler(roleId) {
+            const role = roles.find(r => r.id === roleId);
+            if (!confirm(`Are you sure you want to delete role "${role?.name || roleId}"? This action cannot be undone.`)) {
+                return;
+            }
+
+            try {
+                await deleteRole(roleId);
+                showSuccess('Role deleted successfully!');
+                await loadRoles();
+            } catch (error) {
+                showError('Failed to delete role: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>

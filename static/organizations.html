@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Organizations - TODO Task Management</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Organizations</h1>
+            <div class="header-actions">
+                <a href="/static/index.html" class="btn btn-secondary">Back to Tasks</a>
+                <button id="createOrgBtn" class="btn btn-primary">Create Organization</button>
+            </div>
+        </header>
+
+        <!-- Error Message -->
+        <div id="errorMessage" class="error" style="display: none;"></div>
+
+        <!-- Loading Indicator -->
+        <div id="loadingIndicator" class="loading" style="display: none;">
+            <div class="spinner"></div>
+            <span>Loading organizations...</span>
+        </div>
+
+        <!-- Organizations List -->
+        <section class="tasks-section">
+            <div class="table-header">
+                <h2>Organizations</h2>
+            </div>
+            <div class="table-container">
+                <table id="organizationsTable">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Name</th>
+                            <th>Slug</th>
+                            <th>Description</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="organizationsTableBody">
+                        <!-- Organizations will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <!-- Create/Edit Organization Modal -->
+    <div id="orgModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="orgModalTitle">Create Organization</h2>
+                <button class="modal-close" onclick="closeOrgModal()">&times;</button>
+            </div>
+            <form id="orgForm">
+                <div class="form-group">
+                    <label for="orgName">Name *</label>
+                    <input type="text" id="orgName" required>
+                </div>
+                <div class="form-group">
+                    <label for="orgDescription">Description</label>
+                    <textarea id="orgDescription" rows="3"></textarea>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Save</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeOrgModal()">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Organization Members Modal -->
+    <div id="membersModal" class="modal" style="display: none;">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2 id="membersModalTitle">Organization Members</h2>
+                <button class="modal-close" onclick="closeMembersModal()">&times;</button>
+            </div>
+            <div style="padding: 20px;">
+                <div style="margin-bottom: 20px;">
+                    <h3>Add Member</h3>
+                    <form id="addMemberForm" style="display: flex; gap: 10px; align-items: flex-end;">
+                        <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                            <label for="memberUserId">User ID *</label>
+                            <input type="number" id="memberUserId" required min="1">
+                        </div>
+                        <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                            <label for="memberRoleId">Role ID (optional)</label>
+                            <input type="number" id="memberRoleId" min="1">
+                        </div>
+                        <button type="submit" class="btn btn-primary">Add Member</button>
+                    </form>
+                </div>
+                <div>
+                    <h3>Members</h3>
+                    <div id="membersList">
+                        <!-- Members will be populated here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/tenant-api.js"></script>
+    <script>
+        let currentOrgId = null;
+        let organizations = [];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            setupEventListeners();
+            loadOrganizations();
+        });
+
+        function setupEventListeners() {
+            document.getElementById('createOrgBtn').addEventListener('click', () => {
+                openOrgModal();
+            });
+
+            document.getElementById('orgForm').addEventListener('submit', saveOrganization);
+
+            document.getElementById('addMemberForm').addEventListener('submit', addMember);
+
+            // Close modals on outside click
+            document.getElementById('orgModal').addEventListener('click', (e) => {
+                if (e.target.id === 'orgModal') {
+                    closeOrgModal();
+                }
+            });
+
+            document.getElementById('membersModal').addEventListener('click', (e) => {
+                if (e.target.id === 'membersModal') {
+                    closeMembersModal();
+                }
+            });
+        }
+
+        async function loadOrganizations() {
+            showLoading();
+            hideError();
+            
+            try {
+                organizations = await listOrganizations();
+                renderOrganizations();
+            } catch (error) {
+                showError('Failed to load organizations: ' + error.message);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function renderOrganizations() {
+            const tbody = document.getElementById('organizationsTableBody');
+            tbody.innerHTML = '';
+
+            if (organizations.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px;">No organizations found</td></tr>';
+                return;
+            }
+
+            organizations.forEach(org => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${org.id}</td>
+                    <td>${escapeHtml(org.name || '')}</td>
+                    <td>${escapeHtml(org.slug || '')}</td>
+                    <td>${escapeHtml(org.description || '')}</td>
+                    <td>${formatDate(org.created_at)}</td>
+                    <td class="actions-cell">
+                        <button class="btn btn-small btn-secondary" onclick="viewMembers(${org.id})">Members</button>
+                        <button class="btn btn-small btn-secondary" onclick="editOrganization(${org.id})">Edit</button>
+                        <button class="btn btn-small btn-danger" onclick="deleteOrg(${org.id})">Delete</button>
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        function openOrgModal(orgId = null) {
+            currentOrgId = orgId;
+            const form = document.getElementById('orgForm');
+            const title = document.getElementById('orgModalTitle');
+            
+            if (orgId) {
+                title.textContent = 'Edit Organization';
+                const org = organizations.find(o => o.id === orgId);
+                if (org) {
+                    document.getElementById('orgName').value = org.name || '';
+                    document.getElementById('orgDescription').value = org.description || '';
+                }
+            } else {
+                title.textContent = 'Create Organization';
+                form.reset();
+            }
+            
+            document.getElementById('orgModal').style.display = 'flex';
+        }
+
+        function closeOrgModal() {
+            document.getElementById('orgModal').style.display = 'none';
+            currentOrgId = null;
+        }
+
+        async function saveOrganization(e) {
+            e.preventDefault();
+            
+            const data = {
+                name: document.getElementById('orgName').value,
+                description: document.getElementById('orgDescription').value || null
+            };
+
+            try {
+                if (currentOrgId) {
+                    await updateOrganization(currentOrgId, data);
+                    showSuccess('Organization updated successfully!');
+                } else {
+                    await createOrganization(data);
+                    showSuccess('Organization created successfully!');
+                }
+                
+                closeOrgModal();
+                loadOrganizations();
+            } catch (error) {
+                showError('Failed to save organization: ' + error.message);
+            }
+        }
+
+        async function editOrganization(orgId) {
+            openOrgModal(orgId);
+        }
+
+        async function deleteOrg(orgId) {
+            const org = organizations.find(o => o.id === orgId);
+            if (!confirm(`Are you sure you want to delete organization "${org?.name || orgId}"? This action cannot be undone.`)) {
+                return;
+            }
+
+            try {
+                await deleteOrganization(orgId);
+                showSuccess('Organization deleted successfully!');
+                loadOrganizations();
+            } catch (error) {
+                showError('Failed to delete organization: ' + error.message);
+            }
+        }
+
+        async function viewMembers(orgId) {
+            currentOrgId = orgId;
+            const org = organizations.find(o => o.id === orgId);
+            document.getElementById('membersModalTitle').textContent = `Members: ${escapeHtml(org?.name || 'Organization ' + orgId)}`;
+            document.getElementById('membersModal').style.display = 'flex';
+            document.getElementById('addMemberForm').reset();
+            await loadMembers(orgId);
+        }
+
+        function closeMembersModal() {
+            document.getElementById('membersModal').style.display = 'none';
+            currentOrgId = null;
+        }
+
+        async function loadMembers(orgId) {
+            try {
+                const members = await listOrganizationMembers(orgId);
+                const membersList = document.getElementById('membersList');
+                
+                if (members.length === 0) {
+                    membersList.innerHTML = '<p>No members found.</p>';
+                    return;
+                }
+
+                membersList.innerHTML = `
+                    <table style="width: 100%;">
+                        <thead>
+                            <tr>
+                                <th>User ID</th>
+                                <th>Role ID</th>
+                                <th>Joined</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${members.map(m => `
+                                <tr>
+                                    <td>${m.user_id}</td>
+                                    <td>${m.role_id || 'None'}</td>
+                                    <td>${formatDate(m.joined_at)}</td>
+                                    <td>
+                                        <button class="btn btn-small btn-danger" onclick="removeMember(${m.user_id})">Remove</button>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } catch (error) {
+                showError('Failed to load members: ' + error.message);
+            }
+        }
+
+        async function addMember(e) {
+            e.preventDefault();
+            
+            const userId = parseInt(document.getElementById('memberUserId').value);
+            const roleId = document.getElementById('memberRoleId').value ? parseInt(document.getElementById('memberRoleId').value) : null;
+
+            try {
+                await addOrganizationMember(currentOrgId, userId, roleId);
+                showSuccess('Member added successfully!');
+                document.getElementById('addMemberForm').reset();
+                await loadMembers(currentOrgId);
+            } catch (error) {
+                showError('Failed to add member: ' + error.message);
+            }
+        }
+
+        async function removeMember(userId) {
+            if (!confirm(`Are you sure you want to remove user ${userId} from this organization?`)) {
+                return;
+            }
+
+            try {
+                await removeOrganizationMember(currentOrgId, userId);
+                showSuccess('Member removed successfully!');
+                await loadMembers(currentOrgId);
+            } catch (error) {
+                showError('Failed to remove member: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>

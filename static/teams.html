@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Teams - TODO Task Management</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Teams</h1>
+            <div class="header-actions">
+                <a href="/static/index.html" class="btn btn-secondary">Back to Tasks</a>
+                <button id="createTeamBtn" class="btn btn-primary">Create Team</button>
+            </div>
+        </header>
+
+        <!-- Organization Filter -->
+        <section class="filters">
+            <div class="filter-group">
+                <label for="orgFilter">Organization:</label>
+                <select id="orgFilter">
+                    <option value="">All Organizations</option>
+                </select>
+            </div>
+        </section>
+
+        <!-- Error Message -->
+        <div id="errorMessage" class="error" style="display: none;"></div>
+
+        <!-- Loading Indicator -->
+        <div id="loadingIndicator" class="loading" style="display: none;">
+            <div class="spinner"></div>
+            <span>Loading teams...</span>
+        </div>
+
+        <!-- Teams List -->
+        <section class="tasks-section">
+            <div class="table-header">
+                <h2>Teams</h2>
+            </div>
+            <div class="table-container">
+                <table id="teamsTable">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Organization ID</th>
+                            <th>Name</th>
+                            <th>Description</th>
+                            <th>Created</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="teamsTableBody">
+                        <!-- Teams will be populated here -->
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <!-- Create/Edit Team Modal -->
+    <div id="teamModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="teamModalTitle">Create Team</h2>
+                <button class="modal-close" onclick="closeTeamModal()">&times;</button>
+            </div>
+            <form id="teamForm">
+                <div class="form-group">
+                    <label for="teamOrgId">Organization ID *</label>
+                    <input type="number" id="teamOrgId" required min="1">
+                </div>
+                <div class="form-group">
+                    <label for="teamName">Name *</label>
+                    <input type="text" id="teamName" required>
+                </div>
+                <div class="form-group">
+                    <label for="teamDescription">Description</label>
+                    <textarea id="teamDescription" rows="3"></textarea>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">Save</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeTeamModal()">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Team Members Modal -->
+    <div id="membersModal" class="modal" style="display: none;">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2 id="membersModalTitle">Team Members</h2>
+                <button class="modal-close" onclick="closeMembersModal()">&times;</button>
+            </div>
+            <div style="padding: 20px;">
+                <div style="margin-bottom: 20px;">
+                    <h3>Add Member</h3>
+                    <form id="addMemberForm" style="display: flex; gap: 10px; align-items: flex-end;">
+                        <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                            <label for="memberUserId">User ID *</label>
+                            <input type="number" id="memberUserId" required min="1">
+                        </div>
+                        <div class="form-group" style="flex: 1; margin-bottom: 0;">
+                            <label for="memberRoleId">Role ID (optional)</label>
+                            <input type="number" id="memberRoleId" min="1">
+                        </div>
+                        <button type="submit" class="btn btn-primary">Add Member</button>
+                    </form>
+                </div>
+                <div>
+                    <h3>Members</h3>
+                    <div id="membersList">
+                        <!-- Members will be populated here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/tenant-api.js"></script>
+    <script>
+        let currentTeamId = null;
+        let teams = [];
+        let organizations = [];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            setupEventListeners();
+            loadOrganizations();
+            loadTeams();
+        });
+
+        function setupEventListeners() {
+            document.getElementById('createTeamBtn').addEventListener('click', () => {
+                openTeamModal();
+            });
+
+            document.getElementById('teamForm').addEventListener('submit', saveTeam);
+
+            document.getElementById('orgFilter').addEventListener('change', filterTeams);
+
+            document.getElementById('addMemberForm').addEventListener('submit', addMember);
+
+            // Close modals on outside click
+            document.getElementById('teamModal').addEventListener('click', (e) => {
+                if (e.target.id === 'teamModal') {
+                    closeTeamModal();
+                }
+            });
+
+            document.getElementById('membersModal').addEventListener('click', (e) => {
+                if (e.target.id === 'membersModal') {
+                    closeMembersModal();
+                }
+            });
+        }
+
+        async function loadOrganizations() {
+            try {
+                organizations = await listOrganizations();
+                const orgFilter = document.getElementById('orgFilter');
+                organizations.forEach(org => {
+                    const option = document.createElement('option');
+                    option.value = org.id;
+                    option.textContent = org.name;
+                    orgFilter.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Failed to load organizations:', error);
+            }
+        }
+
+        async function loadTeams() {
+            showLoading();
+            hideError();
+            
+            try {
+                // Load teams from all organizations
+                const allTeams = [];
+                for (const org of organizations) {
+                    try {
+                        const orgTeams = await listTeams(org.id);
+                        allTeams.push(...orgTeams);
+                    } catch (error) {
+                        console.warn(`Failed to load teams for org ${org.id}:`, error);
+                    }
+                }
+                teams = allTeams;
+                renderTeams();
+            } catch (error) {
+                showError('Failed to load teams: ' + error.message);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function filterTeams() {
+            const orgId = parseInt(document.getElementById('orgFilter').value);
+            renderTeams(orgId);
+        }
+
+        function renderTeams(filterOrgId = null) {
+            const tbody = document.getElementById('teamsTableBody');
+            tbody.innerHTML = '';
+
+            let filteredTeams = teams;
+            if (filterOrgId) {
+                filteredTeams = teams.filter(t => t.organization_id === filterOrgId);
+            }
+
+            if (filteredTeams.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px;">No teams found</td></tr>';
+                return;
+            }
+
+            filteredTeams.forEach(team => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${team.id}</td>
+                    <td>${team.organization_id}</td>
+                    <td>${escapeHtml(team.name || '')}</td>
+                    <td>${escapeHtml(team.description || '')}</td>
+                    <td>${formatDate(team.created_at)}</td>
+                    <td class="actions-cell">
+                        <button class="btn btn-small btn-secondary" onclick="viewMembers(${team.id})">Members</button>
+                        <button class="btn btn-small btn-secondary" onclick="editTeam(${team.id})">Edit</button>
+                        <button class="btn btn-small btn-danger" onclick="deleteTeamHandler(${team.id})">Delete</button>
+                    </td>
+                `;
+                tbody.appendChild(row);
+            });
+        }
+
+        function openTeamModal(teamId = null) {
+            currentTeamId = teamId;
+            const form = document.getElementById('teamForm');
+            const title = document.getElementById('teamModalTitle');
+            
+            if (teamId) {
+                title.textContent = 'Edit Team';
+                const team = teams.find(t => t.id === teamId);
+                if (team) {
+                    document.getElementById('teamOrgId').value = team.organization_id || '';
+                    document.getElementById('teamName').value = team.name || '';
+                    document.getElementById('teamDescription').value = team.description || '';
+                }
+            } else {
+                title.textContent = 'Create Team';
+                form.reset();
+            }
+            
+            document.getElementById('teamModal').style.display = 'flex';
+        }
+
+        function closeTeamModal() {
+            document.getElementById('teamModal').style.display = 'none';
+            currentTeamId = null;
+        }
+
+        async function saveTeam(e) {
+            e.preventDefault();
+            
+            const orgId = parseInt(document.getElementById('teamOrgId').value);
+            const data = {
+                name: document.getElementById('teamName').value,
+                description: document.getElementById('teamDescription').value || null
+            };
+
+            try {
+                if (currentTeamId) {
+                    await updateTeam(currentTeamId, data);
+                    showSuccess('Team updated successfully!');
+                } else {
+                    await createTeam(orgId, data);
+                    showSuccess('Team created successfully!');
+                }
+                
+                closeTeamModal();
+                await loadTeams();
+            } catch (error) {
+                showError('Failed to save team: ' + error.message);
+            }
+        }
+
+        async function editTeam(teamId) {
+            openTeamModal(teamId);
+        }
+
+        async function deleteTeamHandler(teamId) {
+            const team = teams.find(t => t.id === teamId);
+            if (!confirm(`Are you sure you want to delete team "${team?.name || teamId}"? This action cannot be undone.`)) {
+                return;
+            }
+
+            try {
+                await deleteTeam(teamId);
+                showSuccess('Team deleted successfully!');
+                await loadTeams();
+            } catch (error) {
+                showError('Failed to delete team: ' + error.message);
+            }
+        }
+
+        async function viewMembers(teamId) {
+            currentTeamId = teamId;
+            const team = teams.find(t => t.id === teamId);
+            document.getElementById('membersModalTitle').textContent = `Members: ${escapeHtml(team?.name || 'Team ' + teamId)}`;
+            document.getElementById('membersModal').style.display = 'flex';
+            document.getElementById('addMemberForm').reset();
+            await loadMembers(teamId);
+        }
+
+        function closeMembersModal() {
+            document.getElementById('membersModal').style.display = 'none';
+            currentTeamId = null;
+        }
+
+        async function loadMembers(teamId) {
+            try {
+                const members = await listTeamMembers(teamId);
+                const membersList = document.getElementById('membersList');
+                
+                if (members.length === 0) {
+                    membersList.innerHTML = '<p>No members found.</p>';
+                    return;
+                }
+
+                membersList.innerHTML = `
+                    <table style="width: 100%;">
+                        <thead>
+                            <tr>
+                                <th>User ID</th>
+                                <th>Role ID</th>
+                                <th>Joined</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${members.map(m => `
+                                <tr>
+                                    <td>${m.user_id}</td>
+                                    <td>${m.role_id || 'None'}</td>
+                                    <td>${formatDate(m.joined_at)}</td>
+                                    <td>
+                                        <button class="btn btn-small btn-danger" onclick="removeMember(${m.user_id})">Remove</button>
+                                    </td>
+                                </tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                `;
+            } catch (error) {
+                showError('Failed to load members: ' + error.message);
+            }
+        }
+
+        async function addMember(e) {
+            e.preventDefault();
+            
+            const userId = parseInt(document.getElementById('memberUserId').value);
+            const roleId = document.getElementById('memberRoleId').value ? parseInt(document.getElementById('memberRoleId').value) : null;
+
+            try {
+                await addTeamMember(currentTeamId, userId, roleId);
+                showSuccess('Member added successfully!');
+                document.getElementById('addMemberForm').reset();
+                await loadMembers(currentTeamId);
+            } catch (error) {
+                showError('Failed to add member: ' + error.message);
+            }
+        }
+
+        async function removeMember(userId) {
+            if (!confirm(`Are you sure you want to remove user ${userId} from this team?`)) {
+                return;
+            }
+
+            try {
+                await removeTeamMember(currentTeamId, userId);
+                showSuccess('Member removed successfully!');
+                await loadMembers(currentTeamId);
+            } catch (error) {
+                showError('Failed to remove member: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>
