@@ -32,10 +32,10 @@ else
     echo ""
     echo "To create the repository manually:"
     echo "1. Go to https://github.com/new"
-    echo "2. Create a new public repository named 'todo-mcp-service'"
+    echo "2. Create a new public repository named 'todorama-mcp-service'"
     echo "3. Do NOT initialize with README, .gitignore, or license"
     echo "4. Then run:"
-    echo "   git remote add origin https://github.com/YOUR_USERNAME/todo-mcp-service.git"
+    echo "   git remote add origin https://github.com/YOUR_USERNAME/todorama-mcp-service.git"
     echo "   git branch -M main"
     echo "   git push -u origin main"
 fi
