@@ -1982,6 +1982,66 @@ app.include_router(all_routes_router)  # Handles /tasks, /projects, etc.
 
 ---
 
+## MCP Interface Testing (CRITICAL)
+
+The MCP (Model Context Protocol) interface is **CRITICAL** for data integrity. Any failures in the MCP interface can result in:
+- Loss of task data
+- Incorrect task status updates
+- Locked tasks that can't be released
+- Corruption of task relationships
+
+### Test Coverage
+
+All MCP tests are in `tests/test_mcp_api.py` and include:
+
+**Protocol-Level Tests (CRITICAL):**
+1. **`test_mcp_sse_endpoint_connectivity`** - Verifies SSE endpoint returns proper JSON-RPC format
+2. **`test_mcp_post_initialize`** - Tests MCP initialize handshake (CRITICAL: Cursor must be able to initialize)
+3. **`test_mcp_post_tools_list`** - Tests tool discovery (CRITICAL: Cursor must discover all tools)
+
+**Tool Execution Tests (CRITICAL):**
+4. **`test_mcp_post_tools_call_list_available_tasks`** - Tests listing tasks via MCP
+5. **`test_mcp_post_tools_call_reserve_task`** - Tests task locking via MCP
+6. **`test_mcp_post_tools_call_complete_task`** - Tests task completion via MCP
+
+**End-to-End Workflow Test (CRITICAL):**
+7. **`test_mcp_complete_workflow`** - Tests full workflow: list → reserve → update → complete
+
+### Running MCP Tests
+
+```bash
+# Run all MCP tests
+pytest tests/test_mcp_api.py -v
+
+# Run specific critical tests
+pytest tests/test_mcp_api.py::test_mcp_post_initialize -v
+pytest tests/test_mcp_api.py::test_mcp_post_tools_list -v
+
+# Run full test suite
+./run_checks.sh
+```
+
+### Before Any MCP Changes
+
+**MANDATORY**: Before modifying any MCP-related code:
+1. Run all MCP tests: `pytest tests/test_mcp_api.py -v`
+2. Verify all tests pass
+3. Test with Cursor MCP client to ensure compatibility
+4. Verify SSE endpoint returns proper JSON-RPC format
+5. Verify POST endpoint handles tools/call requests correctly
+
+### Known Failure Modes (Prevented by Tests)
+
+The MCP tests prevent these critical issues:
+- **SSE endpoint JSON-RPC format errors** (id: null, missing method)
+- **Missing POST endpoint handler** for /mcp/sse
+- **Incorrect tool execution response format**
+- **Missing initialize and tools/list handlers**
+- **Task locking failures** (concurrent access issues)
+- **Task completion failures** (data persistence issues)
+
+For detailed MCP testing documentation, see [MCP_TESTING.md](MCP_TESTING.md).
+
 **Remember**: Tests are not optional. They are your safety net and documentation.
 Every feature should have tests, and every commit should pass all tests.
 
