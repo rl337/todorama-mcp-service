@@ -31,3 +31,13 @@ Thumbs.db
 *.log
 
 .pre-commit-failed
+
+# API keys - never commit!
+api_keys.json
+
+# Backup files
+*.backup
+*.bak
+
+# Test environment files
+.env.test

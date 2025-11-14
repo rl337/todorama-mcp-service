@@ -1774,7 +1774,7 @@ When you encounter a large hub file:
 
 ### Adding Database Functionality
 1. Write test in `tests/test_database.py`
-2. Update schema if needed in `src/database.py`
+2. Update schema if needed in `todorama/database.py`
 3. Implement functionality
 4. Test with various data scenarios
 
